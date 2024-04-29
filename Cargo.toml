@@ -1,0 +1,10 @@
+[package]
+name = "intrust"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+miri = { git = "https://github.com/rust-lang/miri" }
+
+[package.metadata.rust-analyzer]
+rustc_private = true
