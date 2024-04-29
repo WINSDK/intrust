@@ -4,6 +4,7 @@ version = "0.0.0"
 edition = "2021"
 
 [dependencies]
+directories = "5"
 miri = { git = "https://github.com/rust-lang/miri" }
 
 [package.metadata.rust-analyzer]

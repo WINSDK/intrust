@@ -9,6 +9,8 @@ extern crate rustc_const_eval;
 
 mod eval;
 
+use std::path::PathBuf;
+
 use rustc_driver::Compilation;
 use rustc_session::config::{CrateType, ErrorOutputType};
 use rustc_session::EarlyDiagCtxt;
@@ -29,7 +31,11 @@ fn main() {
     let sysroot_flag = String::from("--sysroot");
     if !args.contains(&sysroot_flag) {
         args.push(sysroot_flag);
-        args.push(find_sysroot());
+
+        // From cargo-miri/src/utils.rs.
+        let user_dirs = directories::ProjectDirs::from("org", "rust-lang", "miri").unwrap();
+        let cache_dir = user_dirs.cache_dir().to_string_lossy().into_owned();
+        args.push(cache_dir);
     }
 
     for arg in DEFAULT_ARGS {
@@ -39,8 +45,7 @@ fn main() {
         }
     }
 
-    // Install the ctrlc handler that sets `rustc_const_eval::CTRL_C_RECEIVED`, even if
-    // MIRI_BE_RUSTC is set.
+    // Install the ctrlc handler that sets `rustc_const_eval::CTRL_C_RECEIVED`.
     rustc_driver::install_ctrlc_handler();
 
     // Add an ICE bug report hook.
@@ -49,23 +54,6 @@ fn main() {
 
     println!("{args:?}");
     run_compiler(args, &mut IntrustCompilerCalls {}, using_internal_features);
-}
-
-// Copied from miri/bin/miri.rs
-fn find_sysroot() -> String {
-    if let Ok(sysroot) = std::env::var("MIRI_SYSROOT") {
-        return sysroot;
-    }
-
-    // Taken from https://github.com/rust-lang/rust-clippy/pull/911
-    let home = option_env!("RUSTUP_HOME").or(option_env!("MULTIRUST_HOME"));
-    let toolchain = option_env!("RUSTUP_TOOLCHAIN").or(option_env!("MULTIRUST_TOOLCHAIN"));
-    match (home, toolchain) {
-        (Some(home), Some(toolchain)) => format!("{}/toolchains/{}", home, toolchain),
-        _ => option_env!("RUST_SYSROOT")
-            .expect("need to specify RUST_SYSROOT env var or use rustup or multirust")
-            .to_owned(),
-    }
 }
 
 /// Execute a compiler with the given CLI arguments and callbacks.
