@@ -8,12 +8,19 @@ extern crate rustc_session;
 extern crate rustc_const_eval;
 
 mod eval;
+mod repl;
+mod error;
 
-use std::path::PathBuf;
+use std::sync::mpsc;
 
 use rustc_driver::Compilation;
 use rustc_session::config::{CrateType, ErrorOutputType};
 use rustc_session::EarlyDiagCtxt;
+
+#[derive(Debug)]
+pub enum Error {
+    Repl(repl::ReplCommandError),
+}
 
 pub const DEFAULT_ARGS: &[&str] = &[
     "-Zalways-encode-mir",
@@ -52,8 +59,7 @@ fn main() {
     let using_internal_features =
         rustc_driver::install_ice_hook("https://careful.observer", |_| ());
 
-    println!("{args:?}");
-    run_compiler(args, &mut IntrustCompilerCalls {}, using_internal_features);
+    run_compiler(args, &mut IntrustCompilerCalls { }, using_internal_features);
 }
 
 /// Execute a compiler with the given CLI arguments and callbacks.
@@ -79,6 +85,11 @@ impl rustc_driver::Callbacks for IntrustCompilerCalls {
         _: &rustc_interface::interface::Compiler,
         queries: &'tcx rustc_interface::Queries<'tcx>,
     ) -> Compilation {
+        let (tx, rx) = mpsc::channel();
+
+        // Setup repl if compilation was sucessfull.
+        std::thread::spawn(|| repl::run(tx));
+
         queries.global_ctxt().unwrap().enter(|tcx| {
             if !tcx.crate_types().contains(&CrateType::Executable) {
                 tcx.dcx().fatal("Intrust only works on bin crates");
@@ -90,7 +101,7 @@ impl rustc_driver::Callbacks for IntrustCompilerCalls {
                 tcx.dcx().fatal("Can only run programs that have a main function");
             };
 
-            if let Some(return_code) = eval::run(tcx, entry_def_id, entry_type) {
+            if let Some(return_code) = eval::run(rx, tcx, entry_def_id, entry_type) {
                 std::process::exit(
                     i32::try_from(return_code).expect("Return value was too large!"),
                 );

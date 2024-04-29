@@ -4,8 +4,11 @@ version = "0.0.0"
 edition = "2021"
 
 [dependencies]
+clap = { version = "4.5", features = ["derive"] }
 directories = "5"
 miri = { git = "https://github.com/rust-lang/miri" }
+rustyline = "14.0.0"
+repl_tools = { path = "./repl_tools" }
 
 [package.metadata.rust-analyzer]
 rustc_private = true
