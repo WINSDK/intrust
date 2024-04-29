@@ -262,7 +262,7 @@ macro_rules! define_repl_cmds {
                     if [stringify!($cmd) $(,stringify!($alias))*][..].iter().any(|cmd| cmd.eq_ignore_ascii_case(chosen_cmd)) {
                         let highlighted_argument =
                             <$argument as $crate::HighlightAndComplete>::highlight(rest);
-                        return format!("\x1b[93m{}\x1b[0m{}", chosen_cmd, highlighted_argument).into();
+                        return format!("\x1b[32m{}\x1b[0m{}", chosen_cmd, highlighted_argument).into();
                     }
                 )*
                 line.into()

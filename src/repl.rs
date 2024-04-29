@@ -43,9 +43,18 @@ pub fn run(tx: Sender<ReplCommand>) {
 
     rl.set_helper(Some(ReplHelper::new(true /* color */)));
 
+    let mut last_cmd = None;
     loop {
         match rl.readline("(intrust) ") {
-            Ok(command) => {
+            Ok(mut command) => {
+                // Repeat command on enter.
+                if command == "" {
+                    if let Some(last) = last_cmd {
+                        command = last;
+                    } else {
+                        continue;
+                    }
+                }
                 if command == "q" || command == "quit" || command == "exit" {
                     return;
                 }
@@ -59,6 +68,7 @@ pub fn run(tx: Sender<ReplCommand>) {
                         }
                     }
                 }
+                last_cmd = Some(command);
             }
             Err(rustyline::error::ReadlineError::Eof)
             | Err(rustyline::error::ReadlineError::Interrupted) => {
@@ -77,17 +87,12 @@ pub fn run(tx: Sender<ReplCommand>) {
 }
 
 fn run_command(tx: &Sender<ReplCommand>, color: bool, command: &str) -> Result<(), Error> {
-    if command == "" {
-        return Ok(());
-    }
-
-    let command = ReplCommand::from_str(command)?;
-    match command {
+    match ReplCommand::from_str(command)? {
         ReplCommand::Help(()) => {
             ReplCommand::print_help(std::io::stdout(), color).unwrap();
         }
         ReplCommand::Exit(()) => unreachable!(),
-        _ => {
+        command => {
             let _ = tx.send(command);
         }
     }

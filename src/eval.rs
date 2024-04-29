@@ -55,6 +55,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
             })
             .collect();
 
+        println!();
         dbg!(stack);
     }
 }
@@ -90,8 +91,7 @@ pub fn run<'tcx>(
                     StepResult::Continue => {}
                     StepResult::Exited(code) => {
                         if code != 0 {
-                            tcx.dcx()
-                                .warn(format!("Program exited with error code {code}"));
+                            tcx.dcx().warn(format!("Program exited with error code {code}"));
                         }
 
                         return Some(code);
