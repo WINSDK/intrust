@@ -7,4 +7,4 @@ repository = "https://github.com/headcrab-rs/headcrab/"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-rustyline = "14.0.0"
+rustyline = { version = "14.0.0", features = ["with-sqlite-history"] }

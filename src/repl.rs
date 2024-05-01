@@ -2,8 +2,8 @@ use crate::Error;
 use std::sync::mpsc::Sender;
 
 use repl_tools::HighlightAndComplete;
-use rustyline::history::DefaultHistory;
-use rustyline::CompletionType;
+use rustyline::sqlite_history::SQLiteHistory;
+use rustyline::{CompletionType, Config, Editor};
 
 repl_tools::define_repl_cmds!(enum ReplCommand {
     err = ReplCommandError;
@@ -33,16 +33,20 @@ repl_tools::define_repl_cmds!(enum ReplCommand {
 
 type ReplHelper = repl_tools::MakeHelper<ReplCommand>;
 
-pub fn run(tx: Sender<ReplCommand>) {
-    let mut rl = rustyline::Editor::<ReplHelper, DefaultHistory>::with_config(
-        rustyline::Config::builder()
-            .auto_add_history(true)
-            .completion_type(CompletionType::List)
-            .build()
-    ).unwrap();
+fn editor() -> rustyline::Result<Editor<ReplHelper, SQLiteHistory>> {
+    let config = Config::builder()
+        .auto_add_history(true)
+        .completion_type(CompletionType::List)
+        .build();
+    let history = SQLiteHistory::open(config, "/tmp/intrust.sqlite3")?;
 
+    let mut rl = Editor::with_history(config, history)?;
     rl.set_helper(Some(ReplHelper::new(true /* color */)));
+    Ok(rl)
+}
 
+pub fn run(tx: Sender<ReplCommand>) {
+    let mut rl = editor().expect("Failed to initialize line editor");
     let mut last_cmd = None;
     loop {
         match rl.readline("(intrust) ") {
