@@ -5,7 +5,6 @@ use miri::Machine;
 use rustc_const_eval::CTRL_C_RECEIVED;
 use rustc_span::FileNameDisplayPreference;
 use rustc_hir::def_id::{CrateNum, DefId};
-use rustc_hir::definitions::DefPathData;
 use rustc_middle::ty::TyCtxt;
 use rustc_middle::mir::Location;
 use rustc_session::config::EntryFnType;
@@ -19,7 +18,6 @@ enum StepResult {
     Break,
     Continue,
     Exited(i64),
-    UserExit,
 }
 
 #[derive(Debug, PartialEq)]
@@ -75,7 +73,7 @@ struct Context<'mir, 'tcx> {
 impl<'mir, 'tcx> Context<'mir, 'tcx> {
     fn step(&mut self) -> StepResult {
         if CTRL_C_RECEIVED.load(std::sync::atomic::Ordering::Relaxed) {
-            return StepResult::UserExit;
+            return StepResult::Break;
         }
 
         match self.ecx.step() {
@@ -121,24 +119,9 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
     }
 
     fn print_bt(&self) {
-        let stack: Vec<(String, String, String)> = Machine::stack(&self.ecx)
-            .iter()
-            .map(|frame| {
-                let instance = &frame.instance;
-                let span = frame.current_source_info().unwrap().span;
-                let name = if self.tcx.def_key(instance.def_id()).disambiguated_data.data
-                    == DefPathData::Closure
-                {
-                    "inside call to closure".to_string()
-                } else {
-                    instance.to_string()
-                };
-                (name, format!("{span:?}"), format!("{:?}", instance.def_id()))
-            })
-            .collect();
-
-        println!();
-        dbg!(stack);
+        for frame in Machine::stack(&self.ecx).iter() {
+            println!("{:?}", frame.instance.def_id());
+        }
     }
 
     fn print_src(&self) {
@@ -201,11 +184,6 @@ pub fn run<'tcx>(
                         println!("Program exited with code {code}");
                         return Some(code);
                     }
-                    StepResult::UserExit => {
-                        println!();
-                        tcx.dcx().warn("User send ctrl-c, exiting the program");
-                        return None;
-                    }
                 }
             }
             ReplCommand::Continue(()) => {
@@ -220,11 +198,6 @@ pub fn run<'tcx>(
 
                             println!("Program exited with code {code}");
                             return Some(code);
-                        }
-                        StepResult::UserExit => {
-                            println!();
-                            tcx.dcx().warn("User send ctrl-c, exiting the program");
-                            return None;
                         }
                     }
                 }
