@@ -1,5 +1,6 @@
 use crate::Error;
 use std::sync::mpsc::Sender;
+use std::sync::Barrier;
 
 use repl_tools::HighlightAndComplete;
 use rustyline::sqlite_history::SQLiteHistory;
@@ -11,9 +12,11 @@ repl_tools::define_repl_cmds!(enum ReplCommand {
     /// Step one instruction
     Nexti|ni: (),
     /// Continue the program being debugged
-    Continue|c: (),
-    /// Set a breakpoint at symbol or address
-    Breakpoint|b: String,
+    Cont|c: (),
+    /// Set a breakpoint at an symbol or file:line
+    Break|b: String,
+    /// Remove a breakpoint at an symbol or file:line
+    BreakDelete|bd: String,
     // FIXME move the `read:` part before the `--` in the help
     /// read: List registers and their content for the current stack frame
     Registers|regs: String,
@@ -45,7 +48,7 @@ fn editor() -> rustyline::Result<Editor<ReplHelper, SQLiteHistory>> {
     Ok(rl)
 }
 
-pub fn run(tx: Sender<ReplCommand>) {
+pub fn run(tx: Sender<ReplCommand>, barrier: &Barrier) -> ! {
     let mut rl = editor().expect("Failed to initialize line editor");
     let mut last_cmd = None;
     loop {
@@ -60,7 +63,7 @@ pub fn run(tx: Sender<ReplCommand>) {
                     }
                 }
                 if command == "q" || command == "quit" || command == "exit" {
-                    return;
+                    std::process::exit(0);
                 }
                 match run_command(&tx, rl.helper().unwrap().color, &command) {
                     Ok(()) => {}
@@ -76,7 +79,7 @@ pub fn run(tx: Sender<ReplCommand>) {
             }
             Err(rustyline::error::ReadlineError::Eof)
             | Err(rustyline::error::ReadlineError::Interrupted) => {
-                return;
+                std::process::exit(0);
             }
             Err(err) => {
                 if rl.helper().unwrap().color {
@@ -87,6 +90,8 @@ pub fn run(tx: Sender<ReplCommand>) {
                 std::process::exit(1);
             }
         }
+
+        barrier.wait();
     }
 }
 

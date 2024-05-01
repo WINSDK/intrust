@@ -12,7 +12,7 @@ mod eval;
 mod repl;
 mod error;
 
-use std::sync::mpsc;
+use std::sync::{mpsc, Barrier};
 
 use rustc_driver::Compilation;
 use rustc_session::config::{CrateType, ErrorOutputType};
@@ -89,27 +89,27 @@ impl rustc_driver::Callbacks for IntrustCompilerCalls {
     ) -> Compilation {
         let (tx, rx) = mpsc::channel();
 
-        // Setup repl if compilation was sucessfull.
-        std::thread::spawn(|| repl::run(tx));
+        // Barrier to prevent line reader from updating whilst command is being run.
+        let barrier = Barrier::new(2);
 
-        queries.global_ctxt().unwrap().enter(|tcx| {
-            if !tcx.crate_types().contains(&CrateType::Executable) {
-                tcx.dcx().fatal("Intrust only works on bin crates");
-            }
+        std::thread::scope(|s| {
+            s.spawn(|| repl::run(tx, &barrier));
 
-            let (entry_def_id, entry_type) = if let Some(entry_def) = tcx.entry_fn(()) {
-                entry_def
-            } else {
-                tcx.dcx().fatal("Can only run programs that have a main function");
-            };
+            queries.global_ctxt().unwrap().enter(|tcx| {
+                if !tcx.crate_types().contains(&CrateType::Executable) {
+                    tcx.dcx().fatal("Intrust only works on bin crates");
+                }
 
-            if let Some(return_code) = eval::run(rx, tcx, entry_def_id, entry_type) {
-                std::process::exit(
-                    i32::try_from(return_code).expect("Return value was too large!"),
-                );
-            }
+                let (entry_def_id, entry_type) = if let Some(entry_def) = tcx.entry_fn(()) {
+                    entry_def
+                } else {
+                    tcx.dcx().fatal("Can only run programs that have a main function");
+                };
 
-            tcx.dcx().abort_if_errors();
+                loop {
+                    eval::run(&rx, &barrier, tcx, entry_def_id, entry_type);
+                }
+            });
         });
 
         Compilation::Stop
