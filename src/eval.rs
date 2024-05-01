@@ -4,7 +4,7 @@ use std::path::Path;
 use miri::Machine;
 use rustc_const_eval::CTRL_C_RECEIVED;
 use rustc_span::FileNameDisplayPreference;
-use rustc_hir::def_id::{CrateNum, DefId};
+use rustc_hir::def_id::{LOCAL_CRATE, DefId};
 use rustc_middle::ty::TyCtxt;
 use rustc_middle::mir::Location;
 use rustc_session::config::EntryFnType;
@@ -236,30 +236,14 @@ pub fn run<'tcx>(
     None
 }
 
-fn external_crate_num(tcx: &TyCtxt, crate_name: &str) -> Option<CrateNum> {
-    // Iterate through all crates to find the matching name
-    for &cnum in tcx.crates(()) {
-        // Get the name of the crate
-        let name = tcx.crate_name(cnum);
-
-        // Check if the name matches the crate we're looking for
-        if name.as_str() == crate_name {
-            return Some(cnum);
-        }
-    }
-
-    // If no matching crate is found, return None
-    None
-}
-
 fn resolve_function_name_to_def_id(tcx: &TyCtxt, complete_path: &str) -> Option<DefId> {
     let (crate_name, path) = complete_path.split_once("::")?;
 
-    if external_crate_num(tcx, crate_name).is_some() {
+    if path.is_empty() || crate_name.is_empty() {
         return None;
     }
 
-    if path.is_empty() || crate_name.is_empty() {
+    if tcx.crate_name(LOCAL_CRATE).as_str() != crate_name {
         return None;
     }
 
