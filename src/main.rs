@@ -6,6 +6,7 @@ extern crate rustc_interface;
 extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_const_eval;
+extern crate rustc_span;
 
 mod eval;
 mod repl;
@@ -79,6 +80,7 @@ fn run_compiler(
 
 struct IntrustCompilerCalls {}
 
+// This gets called for every crate being compiled I think.
 impl rustc_driver::Callbacks for IntrustCompilerCalls {
     fn after_analysis<'tcx>(
         &mut self,
