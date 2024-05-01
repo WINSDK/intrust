@@ -1,12 +1,13 @@
 use std::sync::mpsc::Receiver;
 use std::path::Path;
+use std::fmt::{self, Debug};
 
 use miri::Machine;
 use rustc_const_eval::CTRL_C_RECEIVED;
 use rustc_span::FileNameDisplayPreference;
 use rustc_hir::def_id::{LOCAL_CRATE, DefId};
 use rustc_middle::ty::TyCtxt;
-use rustc_middle::mir::Location;
+use rustc_middle::mir::{self, Location};
 use rustc_session::config::EntryFnType;
 
 use crate::repl::ReplCommand;
@@ -28,8 +29,22 @@ enum BreakPointKind {
 
 #[derive(Debug)]
 struct BreakPoint {
+    #[allow(dead_code)]
     id: usize,
     kind: BreakPointKind,
+}
+
+impl fmt::Display for BreakPoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            BreakPointKind::Source { file_path, line } => {
+                f.write_fmt(format_args!("{file_path}:{line}"))
+            }
+            BreakPointKind::Function { id } => {
+                id.fmt(f)
+            }
+        }
+    }
 }
 
 struct BreakPoints {
@@ -108,7 +123,8 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
 
                 let kind = BreakPointKind::Function { id: frame.instance.def_id() };
                 if let Some(bp) = self.bps.find(kind) {
-                    println!("{bp:?}");
+                    println!("   * +--- Hit {bp} ---+");
+                    println!("     |");
                     return StepResult::Break;
                 }
             }
@@ -124,26 +140,43 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         }
     }
 
-    fn print_src(&self) {
-        if let Some(frame) = Machine::stack(&self.ecx).last() {
-            if let Some(span) = frame.current_source_info().map(|si| si.span) {
-                let loc = self.tcx.sess.source_map().lookup_char_pos(span.lo());
-                let start_line = if loc.line >= 3 { loc.line - 1 } else { 0 };
-                let end_line = loc.line + 2; // +2 lines below the current line
+    const LINE_COUNT: usize = 3;
 
-                let source_file = self.tcx.sess.source_map().get_source_file(&loc.file.name).unwrap();
-
-                for line_index in start_line..std::cmp::min(end_line, source_file.count_lines()) {
-                    if let Some(line) = source_file.get_line(line_index) {
-                        println!("{:4} | {}", line_index + 1, line);
-                    }
-                }
-            } else {
-                println!("No source info available");
-            }
-        } else {
-            println!("Call stack is empty.");
+    fn print_code(&self) {
+        if !self.print_src() {
+            self.print_mir();
         }
+    }
+
+    fn print_mir(&self) {
+        let frame = Machine::stack(&self.ecx).last().unwrap();
+        let sp = frame.current_loc().left().unwrap_or(Location::START);
+
+        let bb = &frame.body.basic_blocks[sp.block];
+        for stat in bb.statements[sp.statement_index..].iter().take(Self::LINE_COUNT) {
+            println!("{stat:?}");
+        }
+    }
+
+    fn print_src(&self) -> bool {
+        let mut found_lines = false;
+        let frame = Machine::stack(&self.ecx).last().unwrap();
+        if let Some(span) = frame.current_source_info().map(|si| si.span) {
+            let loc = self.tcx.sess.source_map().lookup_char_pos(span.lo());
+            let start_line = if loc.line >= 3 { loc.line - 1 } else { 0 };
+            let end_line = loc.line + Self::LINE_COUNT;
+
+            let source_file = self.tcx.sess.source_map().get_source_file(&loc.file.name).unwrap();
+
+            for line_index in start_line..std::cmp::min(end_line, source_file.count_lines()) {
+                if let Some(line) = source_file.get_line(line_index) {
+                    println!("{:4} | {}", line_index + 1, line);
+                    found_lines = true;
+                }
+            }
+        }
+
+        found_lines
     }
 }
 
@@ -175,13 +208,13 @@ pub fn run<'tcx>(
         match cmd {
             ReplCommand::Nexti(()) => {
                 match ctx.step() {
-                    StepResult::Continue | StepResult::Break => ctx.print_src(),
+                    StepResult::Continue | StepResult::Break => ctx.print_code(),
                     StepResult::Exited(code) => {
                         if code != 0 {
-                            tcx.dcx().warn(format!("Program exited with error code {code}"));
+                            tcx.dcx().warn(format!("Program exited with error code {code}."));
                         }
 
-                        println!("Program exited with code {code}");
+                        println!("Program exited with code {code}.");
                         return Some(code);
                     }
                 }
@@ -190,10 +223,13 @@ pub fn run<'tcx>(
                 loop {
                     match ctx.step() {
                         StepResult::Continue => continue,
-                        StepResult::Break => break,
+                        StepResult::Break => {
+                            ctx.print_code();
+                            break;
+                        },
                         StepResult::Exited(code) => {
                             if code != 0 {
-                                tcx.dcx().warn(format!("Program exited with error code {code}"));
+                                tcx.dcx().warn(format!("Program exited with error code {code}."));
                             }
 
                             println!("Program exited with code {code}");
@@ -214,16 +250,16 @@ pub fn run<'tcx>(
                     let kind = BreakPointKind::Source { file_path: file_path.to_string(), line };
 
                     if ctx.bps.add(kind) {
-                        println!("Breakpoint already set");
+                        println!("Breakpoint already set.");
                     } else {
-                        println!("Breakpoint set on function {file_path}:{line}");
+                        println!("Breakpoint set on function {file_path}:{line}.");
                     }
                 } else if let Some(id) = resolve_function_name_to_def_id(&tcx, &loc) {
                     let kind = BreakPointKind::Function { id };
                     if ctx.bps.add(kind) {
-                        println!("Breakpoint already set");
+                        println!("Breakpoint already set.");
                     } else {
-                        println!("Breakpoint set on function {loc}");
+                        println!("Breakpoint set on function {loc}.");
                     }
                 } else {
                     println!("Function '{loc}' not found.");
