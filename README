@@ -1,4 +1,7 @@
 Intrust debugger
+
+* Depends on miri for execution.
+* Must be run as `cargo run -- ./some_program.rs`.
 =====
 
        88888888
