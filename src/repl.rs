@@ -73,9 +73,19 @@ pub fn run(tcx: TyCtxt, entry_id: DefId, entry_type: EntryFnType) -> ! {
                 match ReplCommand::from_str(&command) {
                     Ok(ReplCommand::Help(())) => ReplCommand::print_help(color),
                     Ok(ReplCommand::Exit(())) => std::process::exit(0),
-                    Ok(cmd) => if ctx.run_cmd(cmd) {
-                        // If command exited the program, reset the context.
-                        ctx = eval::Context::new(tcx, entry_id, entry_type);
+                    Ok(cmd) => match ctx.run_cmd(cmd) {
+                        Ok(true) => {
+                            // If command exited the program, reset the context.
+                            ctx = eval::Context::new(tcx, entry_id, entry_type);
+                        }
+                        Ok(false) => {}
+                        Err(err) => {
+                            if color {
+                                println!("\x1b[91mError: {}\x1b[0m", err);
+                            } else {
+                                println!("Error: {}", err);
+                            }
+                        }
                     }
                     Err(err) => {
                         if color {

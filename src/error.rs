@@ -1,18 +1,15 @@
 use crate::Error;
-use crate::repl::ReplCommandError;
 use std::fmt;
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Repl(err) => err.fmt(f)?,
+            Error::NotACallable(path) => {
+                f.write_fmt(format_args!("{path:?} is not a callable."))
+            }
+            Error::UnknownPath(path) => {
+                f.write_fmt(format_args!("path '{path}' is unknown."))
+            }
         }
-        Ok(())
-    }
-}
-
-impl From<ReplCommandError> for Error {
-    fn from(value: ReplCommandError) -> Error {
-        Error::Repl(value)
     }
 }

@@ -4,13 +4,16 @@ use std::sync::atomic::Ordering;
 
 use miri::Machine;
 use rustc_const_eval::CTRL_C_RECEIVED;
-use rustc_hir::def_id::{DefId, LOCAL_CRATE};
+use rustc_hir::def::{DefKind, Res};
+use rustc_hir::def_id::DefId;
 use rustc_middle::mir::{self, Location, StatementKind};
 use rustc_middle::ty::TyCtxt;
 use rustc_session::config::EntryFnType;
 use rustc_span::FileNameDisplayPreference;
 
 use crate::repl::ReplCommand;
+use crate::resolve::def_path_res;
+use crate::Error;
 
 // Comes from priroda:
 // https://github.com/oli-obk/priroda/blob/0cc9d44c37266e93822b0c4d4db96226d1368a50/src/main.rs#L46
@@ -33,27 +36,24 @@ enum StepResult {
 #[derive(Debug, PartialEq)]
 enum BreakPointKind {
     Source { file_path: String, line: usize },
-    Function { id: DefId },
+    Function { def_id: DefId },
 }
 
 impl BreakPointKind {
-    fn from_str(tcx: &TyCtxt, loc: &str) -> Option<Self> {
+    fn from_str(tcx: TyCtxt, loc: &str) -> Result<Self, Error> {
         if let Some((file_path, line)) = loc
             .split_once(":")
             .and_then(|(file, line)| line.parse::<usize>().ok().map(|line| (file, line)))
             .filter(|(file, _)| Path::new(&file).exists())
         {
-            let kind = BreakPointKind::Source {
+            return Ok(BreakPointKind::Source {
                 file_path: file_path.to_string(),
                 line,
-            };
-            Some(kind)
-        } else if let Some(id) = resolve_function_name_to_def_id(&tcx, &loc) {
-            let kind = BreakPointKind::Function { id };
-            Some(kind)
-        } else {
-            None
+            });
         }
+
+        let def_id = resolve_function_name_to_def_id(tcx, loc)?;
+        Ok(BreakPointKind::Function { def_id })
     }
 }
 
@@ -70,7 +70,7 @@ impl fmt::Display for BreakPoint {
             BreakPointKind::Source { file_path, line } => {
                 f.write_fmt(format_args!("{file_path}:{line}"))
             }
-            BreakPointKind::Function { id } => id.fmt(f),
+            BreakPointKind::Function { def_id: id } => id.fmt(f),
         }
     }
 }
@@ -148,7 +148,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
     }
 
     // Define a function to handle the program exit logic
-    fn handle_exit(&self, code: i64) -> bool {
+    fn handle_exit(&self, code: i64) {
         if code != 0 {
             self.tcx
                 .dcx()
@@ -156,15 +156,17 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         } else {
             println!("Program exited with code {code}.");
         }
-        true
     }
 
     /// Execute a [`ReplCommand`], returning whether it exited.
-    pub fn run_cmd(&mut self, cmd: ReplCommand) -> bool {
+    pub fn run_cmd(&mut self, cmd: ReplCommand) -> Result<bool, Error> {
         match cmd {
             ReplCommand::Nexti(()) => match self.step() {
                 StepResult::Continue | StepResult::Break => self.print_code(),
-                StepResult::Exited(code) => return self.handle_exit(code),
+                StepResult::Exited(code) => {
+                    self.handle_exit(code);
+                    return Ok(true);
+                }
             },
             ReplCommand::Cont(()) => loop {
                 match self.step() {
@@ -173,36 +175,33 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
                         self.print_code();
                         break;
                     }
-                    StepResult::Exited(code) => return self.handle_exit(code),
+                    StepResult::Exited(code) => {
+                        self.handle_exit(code);
+                        return Ok(true);
+                    }
                 }
             },
             ReplCommand::Backtrace(()) => self.print_bt(),
             ReplCommand::Break(loc) => {
-                if let Some(kind) = BreakPointKind::from_str(&self.tcx, &loc) {
-                    if self.bps.add(kind) {
-                        println!("Breakpoint '{loc}' already set.");
-                    } else {
-                        println!("Breakpoint set on {loc}.");
-                    }
+                let kind = BreakPointKind::from_str(self.tcx, &loc)?;
+                if self.bps.add(kind) {
+                    println!("Breakpoint '{loc}' already set.");
                 } else {
-                    println!("Function '{loc}' not found.");
+                    println!("Breakpoint set on {loc}.");
                 }
             }
             ReplCommand::BreakDelete(loc) => {
-                if let Some(kind) = BreakPointKind::from_str(&self.tcx, &loc) {
-                    if self.bps.remove(&kind) {
-                        println!("Breakpoint {loc} removed.");
-                    } else {
-                        println!("Breakpoint '{loc}' was not set.");
-                    }
+                let kind = BreakPointKind::from_str(self.tcx, &loc)?;
+                if self.bps.remove(&kind) {
+                    println!("Breakpoint {loc} removed.");
                 } else {
-                    println!("Function '{loc}' not found.");
+                    println!("Breakpoint '{loc}' was not set.");
                 }
             }
             _ => {}
         }
 
-        false
+        Ok(false)
     }
 
     fn step(&mut self) -> StepResult {
@@ -253,12 +252,13 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
                     line: src_loc.line,
                 };
                 if let Some(bp) = self.bps.find(kind) {
-                    println!("{bp:?}");
+                    println!("   * +--- Hit {bp} ---+");
+                    println!("     |");
                     return StepResult::Break;
                 }
 
                 let kind = BreakPointKind::Function {
-                    id: frame.instance.def_id(),
+                    def_id: frame.instance.def_id(),
                 };
                 if let Some(bp) = self.bps.find(kind) {
                     println!("   * +--- Hit {bp} ---+");
@@ -333,36 +333,23 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
     }
 }
 
-fn resolve_function_name_to_def_id(tcx: &TyCtxt, complete_path: &str) -> Option<DefId> {
-    let (crate_name, path) = complete_path.split_once("::")?;
+fn resolve_function_name_to_def_id(tcx: TyCtxt, s_path: &str) -> Result<DefId, Error> {
+    let split_path: Vec<&str> = s_path.split("::").collect();
+    let paths = def_path_res(tcx, &split_path);
 
-    if path.is_empty() || crate_name.is_empty() {
-        return None;
+    // Take the first path we find, this might not be correct as
+    // multiple things may share the same path.
+    let path = match paths.get(0) {
+        Some(path) => path,
+        None => return Err(Error::UnknownPath(s_path.to_string())),
+    };
+
+    match path {
+        Res::Def(
+            DefKind::Fn | DefKind::Closure | DefKind::GlobalAsm | DefKind::AssocFn,
+            def_id,
+        ) => Ok(*def_id),
+        Res::Err => return Err(Error::UnknownPath(s_path.to_string())),
+        _ => Err(Error::NotACallable(path.clone())),
     }
-
-    if tcx.crate_name(LOCAL_CRATE).as_str() != crate_name {
-        return None;
-    }
-
-    // Iterate through all the items in the type context..
-    tcx.hir()
-        .items()
-        .filter_map(|item_id| {
-            let hir_id = item_id.hir_id();
-            tcx.hir().fn_sig_by_hir_id(hir_id).and_then(|_| {
-                // Convert the local `HirId` to a global `DefId`.
-                let def_id = hir_id.owner.to_def_id();
-
-                // Get the identifier of the function.
-                let ident = tcx.hir().def_path(def_id.expect_local());
-
-                // Check if the identifier matches the function name we're looking for.
-                if &ident.to_string_no_crate_verbose()[2..] == path {
-                    Some(def_id)
-                } else {
-                    None
-                }
-            })
-        })
-        .next()
 }

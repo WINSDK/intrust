@@ -7,18 +7,23 @@ extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_const_eval;
 extern crate rustc_span;
+extern crate rustc_errors;
 
 mod eval;
 mod repl;
+mod resolve;
 mod error;
 
 use rustc_driver::Compilation;
 use rustc_session::config::{CrateType, ErrorOutputType};
 use rustc_session::EarlyDiagCtxt;
+use rustc_hir::def::Res;
+
 
 #[derive(Debug)]
 pub enum Error {
-    Repl(repl::ReplCommandError),
+    NotACallable(Res),
+    UnknownPath(String),
 }
 
 pub const DEFAULT_ARGS: &[&str] = &[
