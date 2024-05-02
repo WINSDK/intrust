@@ -223,16 +223,15 @@ macro_rules! define_repl_cmds {
         impl std::error::Error for $error_ty {}
 
         impl $command {
-            fn print_help(mut w: impl std::io::Write, color: bool) -> std::io::Result<()> {
+            fn print_help(color: bool) {
                 $(
                     if color {
-                        write!(w, "\x1b[1m{}\x1b[0m -- ", concat!(stringify!($cmd $(|$alias)*)).to_lowercase())?;
+                        print!("\x1b[1m{}\x1b[0m -- ", concat!(stringify!($cmd $(|$alias)*)).to_lowercase());
                     } else {
-                        write!(w, "{} -- ", concat!(stringify!($cmd $(|$alias)*)).to_lowercase())?;
+                        print!("{} -- ", concat!(stringify!($cmd $(|$alias)*)).to_lowercase());
                     }
-                    writeln!(w, "{}", $doc.trim())?;
+                    println!("{}", $doc.trim());
                 )*
-                Ok(())
             }
         }
 

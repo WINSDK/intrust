@@ -1,14 +1,20 @@
 use crate::Error;
-use std::sync::mpsc::Sender;
-use std::sync::Barrier;
+use crate::eval;
 
 use repl_tools::HighlightAndComplete;
 use rustyline::sqlite_history::SQLiteHistory;
-use rustyline::{CompletionType, Config, Editor};
+use rustyline::{CompletionType, Config};
+use rustyline::error::ReadlineError;
+
+use rustc_middle::ty::TyCtxt;
+use rustc_hir::def_id::DefId;
+use rustc_session::config::EntryFnType;
 
 repl_tools::define_repl_cmds!(enum ReplCommand {
     err = ReplCommandError;
 
+    /// Does nothing
+    Nop: (),
     /// Step one instruction
     Nexti|ni: (),
     /// Continue the program being debugged
@@ -35,8 +41,9 @@ repl_tools::define_repl_cmds!(enum ReplCommand {
 });
 
 type ReplHelper = repl_tools::MakeHelper<ReplCommand>;
+type Editor = rustyline::Editor<ReplHelper, SQLiteHistory>;
 
-fn editor() -> rustyline::Result<Editor<ReplHelper, SQLiteHistory>> {
+fn editor() -> rustyline::Result<Editor> {
     let config = Config::builder()
         .auto_add_history(true)
         .completion_type(CompletionType::List)
@@ -48,8 +55,11 @@ fn editor() -> rustyline::Result<Editor<ReplHelper, SQLiteHistory>> {
     Ok(rl)
 }
 
-pub fn run(tx: Sender<ReplCommand>, barrier: &Barrier) -> ! {
+pub fn run(tcx: TyCtxt, entry_id: DefId, entry_type: EntryFnType) -> ! {
     let mut rl = editor().expect("Failed to initialize line editor");
+    let color = rl.helper().unwrap().color;
+    let mut ctx = eval::Context::new(tcx, entry_id, entry_type);
+
     let mut last_cmd = None;
     loop {
         match rl.readline("(intrust) ") {
@@ -62,27 +72,30 @@ pub fn run(tx: Sender<ReplCommand>, barrier: &Barrier) -> ! {
                         continue;
                     }
                 }
-                if command == "q" || command == "quit" || command == "exit" {
-                    std::process::exit(0);
-                }
-                match run_command(&tx, rl.helper().unwrap().color, &command) {
-                    Ok(()) => {}
+
+                match ReplCommand::from_str(&command) {
+                    Ok(ReplCommand::Help(())) => ReplCommand::print_help(color),
+                    Ok(ReplCommand::Exit(())) => std::process::exit(0),
+                    Ok(cmd) => if ctx.run_cmd(cmd) {
+                        // If command exited the program, reset the context.
+                        ctx = eval::Context::new(tcx, entry_id, entry_type);
+                    }
                     Err(err) => {
-                        if rl.helper().unwrap().color {
+                        if color {
                             println!("\x1b[91mError: {}\x1b[0m", err);
                         } else {
                             println!("Error: {}", err);
                         }
                     }
                 }
+
                 last_cmd = Some(command);
             }
-            Err(rustyline::error::ReadlineError::Eof)
-            | Err(rustyline::error::ReadlineError::Interrupted) => {
+            Err(ReadlineError::Eof | ReadlineError::Interrupted) => {
                 std::process::exit(0);
             }
             Err(err) => {
-                if rl.helper().unwrap().color {
+                if color {
                     println!("\x1b[91mError: {:?}\x1b[0m", err);
                 } else {
                     println!("Error: {:?}", err);
@@ -90,20 +103,5 @@ pub fn run(tx: Sender<ReplCommand>, barrier: &Barrier) -> ! {
                 std::process::exit(1);
             }
         }
-
-        barrier.wait();
     }
-}
-
-fn run_command(tx: &Sender<ReplCommand>, color: bool, command: &str) -> Result<(), Error> {
-    match ReplCommand::from_str(command)? {
-        ReplCommand::Help(()) => {
-            ReplCommand::print_help(std::io::stdout(), color).unwrap();
-        }
-        ReplCommand::Exit(()) => unreachable!(),
-        command => {
-            let _ = tx.send(command);
-        }
-    }
-    Ok(())
 }

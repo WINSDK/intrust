@@ -12,8 +12,6 @@ mod eval;
 mod repl;
 mod error;
 
-use std::sync::{mpsc, Barrier};
-
 use rustc_driver::Compilation;
 use rustc_session::config::{CrateType, ErrorOutputType};
 use rustc_session::EarlyDiagCtxt;
@@ -87,31 +85,18 @@ impl rustc_driver::Callbacks for IntrustCompilerCalls {
         _: &rustc_interface::interface::Compiler,
         queries: &'tcx rustc_interface::Queries<'tcx>,
     ) -> Compilation {
-        let (tx, rx) = mpsc::channel();
+        queries.global_ctxt().unwrap().enter(|tcx| {
+            if !tcx.crate_types().contains(&CrateType::Executable) {
+                tcx.dcx().fatal("Intrust only works on bin crates");
+            }
 
-        // Barrier to prevent line reader from updating whilst command is being run.
-        let barrier = Barrier::new(2);
+            let (entry_def_id, entry_type) = if let Some(entry_def) = tcx.entry_fn(()) {
+                entry_def
+            } else {
+                tcx.dcx().fatal("Can only run programs that have a main function");
+            };
 
-        std::thread::scope(|s| {
-            s.spawn(|| repl::run(tx, &barrier));
-
-            queries.global_ctxt().unwrap().enter(|tcx| {
-                if !tcx.crate_types().contains(&CrateType::Executable) {
-                    tcx.dcx().fatal("Intrust only works on bin crates");
-                }
-
-                let (entry_def_id, entry_type) = if let Some(entry_def) = tcx.entry_fn(()) {
-                    entry_def
-                } else {
-                    tcx.dcx().fatal("Can only run programs that have a main function");
-                };
-
-                loop {
-                    eval::run(&rx, &barrier, tcx, entry_def_id, entry_type);
-                }
-            });
-        });
-
-        Compilation::Stop
+            repl::run(tcx, entry_def_id, entry_type)
+        })
     }
 }
