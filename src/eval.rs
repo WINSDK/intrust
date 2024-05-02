@@ -145,21 +145,22 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         }
     }
 
+    // Define a function to handle the program exit logic
+    fn handle_exit(&self, code: i64) -> bool {
+        if code != 0 {
+            self.tcx.dcx().warn(format!("Program exited with error code {code}."));
+        } else {
+            println!("Program exited with code {code}.");
+        }
+        true
+    }
+
     /// Execute a [`ReplCommand`], returning whether it exited.
     pub fn run_cmd(&mut self, cmd: ReplCommand) -> bool {
         match cmd {
             ReplCommand::Nexti(()) => match self.step() {
                 StepResult::Continue | StepResult::Break => self.print_code(),
-                StepResult::Exited(code) => {
-                    if code != 0 {
-                        self.tcx
-                            .dcx()
-                            .warn(format!("Program exited with error code {code}."));
-                    } else {
-                        println!("Progeam exited with code {code}.");
-                    }
-                    return true;
-                }
+                StepResult::Exited(code) => return self.handle_exit(code)
             },
             ReplCommand::Cont(()) => loop {
                 match self.step() {
@@ -168,21 +169,10 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
                         self.print_code();
                         break;
                     }
-                    StepResult::Exited(code) => {
-                        if code != 0 {
-                            self.tcx
-                                .dcx()
-                                .warn(format!("Program exited with error code {code}."));
-                        } else {
-                            println!("Program exited with code {code}.");
-                        }
-                        return true;
-                    }
+                    StepResult::Exited(code) => return self.handle_exit(code),
                 }
             },
-            ReplCommand::Backtrace(()) => {
-                self.print_bt();
-            }
+            ReplCommand::Backtrace(()) => self.print_bt(),
             ReplCommand::Break(loc) => {
                 if let Some(kind) = BreakPointKind::from_str(&self.tcx, &loc) {
                     if self.bps.add(kind) {
