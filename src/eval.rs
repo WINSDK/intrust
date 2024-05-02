@@ -26,19 +26,6 @@ fn should_hide_stmt(stmt: &mir::Statement<'_>) -> bool {
 
 const NO_BREAKPOINT_ID: usize = 0;
 
-#[derive(Clone, Copy)]
-enum StepResult {
-    Break,
-    Continue,
-    Exited(i64),
-}
-
-#[derive(Debug, PartialEq)]
-enum BreakPointKind {
-    Source { file: String, line: usize },
-    Function { def_id: DefId },
-}
-
 fn source_file_exists(tcx: TyCtxt, file_name: &str) -> bool {
     let file_name = Path::new(file_name);
     let source_map = tcx.sess.source_map();
@@ -56,6 +43,33 @@ fn source_file_exists(tcx: TyCtxt, file_name: &str) -> bool {
     }
 
     false
+}
+
+fn resolve_function_name_to_def_id(tcx: TyCtxt, s_path: &str) -> Result<DefId, Error> {
+    let split_path: Vec<&str> = s_path.split("::").collect();
+    let paths = def_path_res(tcx, &split_path);
+
+    // Take the first path we find, this might not be correct as
+    // multiple things may share the same path.
+    let path = match paths.get(0) {
+        Some(path) => path,
+        None => return Err(Error::UnknownPath(s_path.to_string())),
+    };
+
+    match path {
+        Res::Def(
+            DefKind::Fn | DefKind::Closure | DefKind::GlobalAsm | DefKind::AssocFn,
+            def_id,
+        ) => Ok(*def_id),
+        Res::Err => return Err(Error::UnknownPath(s_path.to_string())),
+        _ => Err(Error::NotACallable(path.clone())),
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum BreakPointKind {
+    Source { file: String, line: usize },
+    Function { def_id: DefId },
 }
 
 impl BreakPointKind {
@@ -144,6 +158,13 @@ impl BreakPoints {
     }
 }
 
+#[derive(Clone, Copy)]
+enum StepResult {
+    Break,
+    Continue,
+    Exited(i64),
+}
+
 pub struct Context<'mir, 'tcx> {
     tcx: TyCtxt<'tcx>,
     ecx: miri::MiriInterpCx<'mir, 'tcx>,
@@ -226,6 +247,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
                     println!("Breakpoint '{loc}' was not set.");
                 }
             }
+            ReplCommand::List(()) => self.print_code(),
             _ => {}
         }
 
@@ -305,7 +327,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         }
     }
 
-    const LINE_COUNT: usize = 3;
+    const LINE_COUNT: usize = 9;
 
     fn print_code(&self) {
         if !self.print_src() {
@@ -358,26 +380,5 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         }
 
         found_lines
-    }
-}
-
-fn resolve_function_name_to_def_id(tcx: TyCtxt, s_path: &str) -> Result<DefId, Error> {
-    let split_path: Vec<&str> = s_path.split("::").collect();
-    let paths = def_path_res(tcx, &split_path);
-
-    // Take the first path we find, this might not be correct as
-    // multiple things may share the same path.
-    let path = match paths.get(0) {
-        Some(path) => path,
-        None => return Err(Error::UnknownPath(s_path.to_string())),
-    };
-
-    match path {
-        Res::Def(
-            DefKind::Fn | DefKind::Closure | DefKind::GlobalAsm | DefKind::AssocFn,
-            def_id,
-        ) => Ok(*def_id),
-        Res::Err => return Err(Error::UnknownPath(s_path.to_string())),
-        _ => Err(Error::NotACallable(path.clone())),
     }
 }
