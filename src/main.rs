@@ -24,6 +24,7 @@ use rustc_hir::def::Res;
 pub enum Error {
     NotACallable(Res),
     UnknownPath(String),
+    FileNotFound(String),
 }
 
 pub const DEFAULT_ARGS: &[&str] = &[

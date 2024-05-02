@@ -10,6 +10,9 @@ impl fmt::Display for Error {
             Error::UnknownPath(path) => {
                 f.write_fmt(format_args!("path '{path}' is unknown."))
             }
+            Error::FileNotFound(path) => {
+                f.write_fmt(format_args!("file '{path}' is not a valid file."))
+            }
         }
     }
 }

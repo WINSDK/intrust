@@ -9,7 +9,7 @@ use rustc_hir::def_id::DefId;
 use rustc_middle::mir::{self, Location, StatementKind};
 use rustc_middle::ty::TyCtxt;
 use rustc_session::config::EntryFnType;
-use rustc_span::FileNameDisplayPreference;
+use rustc_span::{FileName, FileNameDisplayPreference};
 
 use crate::repl::ReplCommand;
 use crate::resolve::def_path_res;
@@ -35,21 +35,48 @@ enum StepResult {
 
 #[derive(Debug, PartialEq)]
 enum BreakPointKind {
-    Source { file_path: String, line: usize },
+    Source { file: String, line: usize },
     Function { def_id: DefId },
+}
+
+fn source_file_exists(tcx: TyCtxt, file_name: &str) -> bool {
+    let file_name = Path::new(file_name);
+    let source_map = tcx.sess.source_map();
+
+    for file in source_map.files().iter() {
+        if let FileName::Real(ref real_path) = file.name {
+            if let Some(real_path) = real_path.local_path() {
+                if let Some(name) = real_path.file_name() {
+                    if file_name == name {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }
 
 impl BreakPointKind {
     fn from_str(tcx: TyCtxt, loc: &str) -> Result<Self, Error> {
-        if let Some((file_path, line)) = loc
+        if let Some((s_path, line)) = loc
             .split_once(":")
             .and_then(|(file, line)| line.parse::<usize>().ok().map(|line| (file, line)))
-            .filter(|(file, _)| Path::new(&file).exists())
         {
-            return Ok(BreakPointKind::Source {
-                file_path: file_path.to_string(),
-                line,
-            });
+            let path = Path::new(s_path);
+            let file = match Path::new(path).file_name() {
+                Some(file) => {
+                    let file_name = file.to_string_lossy().into_owned();
+                    if !source_file_exists(tcx, &file_name) {
+                        return Err(Error::FileNotFound(s_path.to_string()));
+                    }
+                    file_name
+                },
+                None => return Err(Error::FileNotFound(s_path.to_string())),
+            };
+
+            return Ok(BreakPointKind::Source { file, line });
         }
 
         let def_id = resolve_function_name_to_def_id(tcx, loc)?;
@@ -67,9 +94,10 @@ struct BreakPoint {
 impl fmt::Display for BreakPoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            BreakPointKind::Source { file_path, line } => {
-                f.write_fmt(format_args!("{file_path}:{line}"))
-            }
+            BreakPointKind::Source {
+                file: file_path,
+                line,
+            } => f.write_fmt(format_args!("{file_path}:{line}")),
             BreakPointKind::Function { def_id: id } => id.fmt(f),
         }
     }
@@ -240,15 +268,15 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
             if is_at_start {
                 let span = frame.current_source_info().unwrap().span;
                 let src_loc = self.tcx.sess.source_map().lookup_char_pos(span.lo());
-                let file_path = src_loc
+                let file_name = src_loc
                     .file
                     .name
-                    .display(FileNameDisplayPreference::Remapped)
+                    .display(FileNameDisplayPreference::Short)
                     .to_string_lossy()
                     .into_owned();
 
                 let kind = BreakPointKind::Source {
-                    file_path,
+                    file: file_name,
                     line: src_loc.line,
                 };
                 if let Some(bp) = self.bps.find(kind) {
