@@ -1,22 +1,24 @@
 use std::fmt::{self, Debug};
 use std::path::Path;
+use std::sync::atomic::Ordering;
 
 use miri::Machine;
 use rustc_const_eval::CTRL_C_RECEIVED;
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
-use rustc_middle::mir::{self, Location};
+use rustc_middle::mir::{self, Location, StatementKind};
 use rustc_middle::ty::TyCtxt;
 use rustc_session::config::EntryFnType;
 use rustc_span::FileNameDisplayPreference;
 
 use crate::repl::ReplCommand;
 
+// Comes from priroda:
+// https://github.com/oli-obk/priroda/blob/0cc9d44c37266e93822b0c4d4db96226d1368a50/src/main.rs#L46
 fn should_hide_stmt(stmt: &mir::Statement<'_>) -> bool {
-    use rustc_middle::mir::StatementKind::*;
-    match stmt.kind {
-        StorageLive(_) | StorageDead(_) | Nop => true,
-        _ => false,
-    }
+    matches!(
+        stmt.kind,
+        StatementKind::StorageLive(_) | StatementKind::StorageDead(_) | StatementKind::Nop
+    )
 }
 
 const NO_BREAKPOINT_ID: usize = 0;
@@ -148,7 +150,9 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
     // Define a function to handle the program exit logic
     fn handle_exit(&self, code: i64) -> bool {
         if code != 0 {
-            self.tcx.dcx().warn(format!("Program exited with error code {code}."));
+            self.tcx
+                .dcx()
+                .warn(format!("Program exited with error code {code}."));
         } else {
             println!("Program exited with code {code}.");
         }
@@ -160,7 +164,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         match cmd {
             ReplCommand::Nexti(()) => match self.step() {
                 StepResult::Continue | StepResult::Break => self.print_code(),
-                StepResult::Exited(code) => return self.handle_exit(code)
+                StepResult::Exited(code) => return self.handle_exit(code),
             },
             ReplCommand::Cont(()) => loop {
                 match self.step() {
@@ -202,7 +206,9 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
     }
 
     fn step(&mut self) -> StepResult {
-        if CTRL_C_RECEIVED.load(std::sync::atomic::Ordering::Relaxed) {
+        if CTRL_C_RECEIVED.load(Ordering::Relaxed) {
+            CTRL_C_RECEIVED.store(false, Ordering::Relaxed);
+            println!();
             return StepResult::Break;
         }
 
@@ -215,12 +221,22 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
             }
         }
 
-        // Check breakpoints before each command execution
+        // Check breakpoints before each command execution.
         if let Some(frame) = Machine::stack(&self.ecx).last() {
-            let is_at_start = match frame.loc.left() {
-                Some(loc) => loc == Location::START,
-                None => true,
-            };
+            let mut is_at_start = true;
+
+            if let Some(loc) = frame.loc.left() {
+                let bb = &frame.body.basic_blocks[loc.block];
+
+                // If the current statement should be hidden, keep stepping.
+                if loc.statement_index != bb.statements.len()
+                    && should_hide_stmt(&bb.statements[loc.statement_index])
+                {
+                    return self.step();
+                }
+
+                is_at_start = loc == Location::START;
+            }
 
             if is_at_start {
                 let span = frame.current_source_info().unwrap().span;
@@ -274,9 +290,19 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         let sp = frame.current_loc().left().unwrap_or(Location::START);
 
         let bb = &frame.body.basic_blocks[sp.block];
-        let statements = &bb.statements[sp.statement_index..];
-        for (idx, stat) in statements.iter().take(Self::LINE_COUNT).enumerate() {
-            println!("{:4} | {:?}", idx + sp.statement_index + 1, stat);
+        let stmts = &bb.statements[sp.statement_index..];
+        let mut stmts_shown = 0;
+        for (idx, stmt) in stmts.iter().enumerate() {
+            if stmts_shown == Self::LINE_COUNT {
+                break;
+            }
+
+            if should_hide_stmt(stmt) {
+                continue;
+            }
+
+            println!("{:4} | {:?}", idx + sp.statement_index + 1, stmt);
+            stmts_shown += 1;
         }
     }
 
@@ -318,19 +344,19 @@ fn resolve_function_name_to_def_id(tcx: &TyCtxt, complete_path: &str) -> Option<
         return None;
     }
 
-    // Iterate through all the items in the type context
+    // Iterate through all the items in the type context..
     tcx.hir()
         .items()
         .filter_map(|item_id| {
             let hir_id = item_id.hir_id();
             tcx.hir().fn_sig_by_hir_id(hir_id).and_then(|_| {
-                // Convert the local `HirId` to a global `DefId`
+                // Convert the local `HirId` to a global `DefId`.
                 let def_id = hir_id.owner.to_def_id();
 
-                // Get the identifier of the function
+                // Get the identifier of the function.
                 let ident = tcx.hir().def_path(def_id.expect_local());
 
-                // Check if the identifier matches the function name we're looking for
+                // Check if the identifier matches the function name we're looking for.
                 if &ident.to_string_no_crate_verbose()[2..] == path {
                     Some(def_id)
                 } else {
@@ -338,5 +364,5 @@ fn resolve_function_name_to_def_id(tcx: &TyCtxt, complete_path: &str) -> Option<
                 }
             })
         })
-        .next() // Return the first match, if any
+        .next()
 }
