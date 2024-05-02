@@ -45,15 +45,15 @@ fn source_file_exists(tcx: TyCtxt, file_name: &str) -> bool {
     false
 }
 
-fn resolve_function_name_to_def_id(tcx: TyCtxt, s_path: &str) -> Result<DefId, Error> {
-    let split_path: Vec<&str> = s_path.split("::").collect();
+fn resolve_function_name_to_def_id(tcx: TyCtxt, loc: &str) -> Result<DefId, Error> {
+    let split_path: Vec<&str> = loc.split("::").collect();
     let paths = def_path_res(tcx, &split_path);
 
     // Take the first path we find, this might not be correct as
     // multiple things may share the same path.
     let path = match paths.get(0) {
         Some(path) => path,
-        None => return Err(Error::UnknownPath(s_path.to_string())),
+        None => return Err(Error::UnknownPath(loc.to_string())),
     };
 
     match path {
@@ -61,7 +61,7 @@ fn resolve_function_name_to_def_id(tcx: TyCtxt, s_path: &str) -> Result<DefId, E
             DefKind::Fn | DefKind::Closure | DefKind::GlobalAsm | DefKind::AssocFn,
             def_id,
         ) => Ok(*def_id),
-        Res::Err => return Err(Error::UnknownPath(s_path.to_string())),
+        Res::Err => return Err(Error::UnknownPath(loc.to_string())),
         _ => Err(Error::NotACallable(path.clone())),
     }
 }
@@ -171,6 +171,48 @@ pub struct Context<'mir, 'tcx> {
     bps: BreakPoints,
 }
 
+const PRINT_LINE_COUNT: usize = 9;
+
+fn print_body_mir(body: &mir::Body, sp: Location) {
+    let mut stmts_shown = 0;
+
+    // Traverse the basic blocks, skipping to sp.block.
+    'printing: for bb in body.basic_blocks.reverse_postorder() {
+        if *bb < sp.block {
+            continue;
+        }
+
+        let stmt_idx = if *bb == sp.block {
+            sp.statement_index
+        } else {
+            Location::START.statement_index
+        };
+
+        let bb = &body.basic_blocks[*bb];
+        let stmts = &bb.statements[stmt_idx..];
+
+        let mut blck_stmts_shown = 0;
+        for (idx, stmt) in stmts.iter().enumerate() {
+            if stmts_shown == PRINT_LINE_COUNT {
+                break 'printing;
+            }
+
+            if should_hide_stmt(stmt) {
+                continue;
+            }
+
+            println!("{:4} | {:?}", idx + sp.statement_index + 1, stmt);
+            stmts_shown += 1;
+            blck_stmts_shown += 1;
+        }
+
+        // If we have to traverse more than one block, print a separator.
+        if stmts_shown < PRINT_LINE_COUNT && blck_stmts_shown > 0 {
+            println!("-----+");
+        }
+    }
+}
+
 impl<'mir, 'tcx> Context<'mir, 'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>, entry_id: DefId, entry_type: EntryFnType) -> Self {
         let ecx = miri::create_ecx(
@@ -248,6 +290,17 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
                 }
             }
             ReplCommand::List(()) => self.print_code(),
+            ReplCommand::Disassemble(loc) => {
+                let def_id = resolve_function_name_to_def_id(self.tcx, &loc)?;
+
+                if self.tcx.is_mir_available(def_id) {
+                    let body = self.tcx.optimized_mir(def_id);
+                    println!("   * +--- {def_id:?} ---+");
+                    print_body_mir(&body, Location::START);
+                } else {
+                    println!("MIR for {def_id:?} is not available.");
+                }
+            }
             _ => {}
         }
 
@@ -327,8 +380,6 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         }
     }
 
-    const LINE_COUNT: usize = 9;
-
     fn print_code(&self) {
         if !self.print_src() {
             self.print_mir();
@@ -338,22 +389,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
     fn print_mir(&self) {
         let frame = Machine::stack(&self.ecx).last().unwrap();
         let sp = frame.current_loc().left().unwrap_or(Location::START);
-
-        let bb = &frame.body.basic_blocks[sp.block];
-        let stmts = &bb.statements[sp.statement_index..];
-        let mut stmts_shown = 0;
-        for (idx, stmt) in stmts.iter().enumerate() {
-            if stmts_shown == Self::LINE_COUNT {
-                break;
-            }
-
-            if should_hide_stmt(stmt) {
-                continue;
-            }
-
-            println!("{:4} | {:?}", idx + sp.statement_index + 1, stmt);
-            stmts_shown += 1;
-        }
+        print_body_mir(&frame.body, sp);
     }
 
     fn print_src(&self) -> bool {
@@ -362,7 +398,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         if let Some(span) = frame.current_source_info().map(|si| si.span) {
             let loc = self.tcx.sess.source_map().lookup_char_pos(span.lo());
             let start_line = if loc.line >= 3 { loc.line - 1 } else { 0 };
-            let end_line = loc.line + Self::LINE_COUNT;
+            let end_line = loc.line + PRINT_LINE_COUNT;
 
             let source_file = self
                 .tcx

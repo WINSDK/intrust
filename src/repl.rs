@@ -26,7 +26,7 @@ repl_tools::define_repl_cmds!(enum ReplCommand {
     /// Print backtrace of stack frames
     Backtrace|bt: (),
     /// Disassemble some a several instructions starting at the instruction pointer
-    Disassemble|dis: (),
+    Disassemble|dis: String,
     /// Print all local variables of current stack frame
     Locals: (),
     /// Print this help
@@ -98,9 +98,8 @@ pub fn run(tcx: TyCtxt, entry_id: DefId, entry_type: EntryFnType) -> ! {
 
                 last_cmd = Some(command);
             }
-            Err(ReadlineError::Eof | ReadlineError::Interrupted) => {
-                std::process::exit(0);
-            }
+            Err(ReadlineError::Interrupted) => {},
+            Err(ReadlineError::Eof) => std::process::exit(0),
             Err(err) => {
                 if color {
                     println!("\x1b[91mError: {:?}\x1b[0m", err);
