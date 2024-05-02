@@ -1,4 +1,3 @@
-use crate::Error;
 use crate::eval;
 
 use repl_tools::HighlightAndComplete;
@@ -13,8 +12,6 @@ use rustc_session::config::EntryFnType;
 repl_tools::define_repl_cmds!(enum ReplCommand {
     err = ReplCommandError;
 
-    /// Does nothing
-    Nop: (),
     /// Step one instruction
     Nexti|ni: (),
     /// Continue the program being debugged
