@@ -60,17 +60,19 @@ pub fn run(tcx: TyCtxt, entry_id: DefId, entry_type: EntryFnType) -> ! {
     let mut last_cmd = None;
     loop {
         match rl.readline("(intrust) ") {
-            Ok(mut command) => {
+            Ok(cmd) => {
+                let mut cmd = cmd.trim().to_string();
+
                 // Repeat command on enter.
-                if command == "" {
+                if cmd.is_empty() {
                     if let Some(last) = last_cmd {
-                        command = last;
+                        cmd = last;
                     } else {
                         continue;
                     }
                 }
 
-                match ReplCommand::from_str(&command) {
+                match ReplCommand::from_str(&cmd) {
                     Ok(ReplCommand::Help(())) => ReplCommand::print_help(color),
                     Ok(ReplCommand::Exit(())) => std::process::exit(0),
                     Ok(cmd) => match ctx.run_cmd(cmd) {
@@ -96,7 +98,7 @@ pub fn run(tcx: TyCtxt, entry_id: DefId, entry_type: EntryFnType) -> ! {
                     }
                 }
 
-                last_cmd = Some(command);
+                last_cmd = Some(cmd);
             }
             Err(ReadlineError::Interrupted) => {},
             Err(ReadlineError::Eof) => std::process::exit(0),

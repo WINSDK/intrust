@@ -12,17 +12,8 @@ use rustc_session::config::EntryFnType;
 use rustc_span::{FileName, FileNameDisplayPreference};
 
 use crate::repl::ReplCommand;
-use crate::resolve::def_path_res;
-use crate::Error;
-
-// Comes from priroda:
-// https://github.com/oli-obk/priroda/blob/0cc9d44c37266e93822b0c4d4db96226d1368a50/src/main.rs#L46
-fn should_hide_stmt(stmt: &mir::Statement<'_>) -> bool {
-    matches!(
-        stmt.kind,
-        StatementKind::StorageLive(_) | StatementKind::StorageDead(_) | StatementKind::Nop
-    )
-}
+use crate::mir::{write_mir_intro, write_mir_fn, def_path_res};
+use crate::{should_hide_stmt, Error};
 
 const NO_BREAKPOINT_ID: usize = 0;
 
@@ -296,7 +287,25 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
                 if self.tcx.is_mir_available(def_id) {
                     let body = self.tcx.optimized_mir(def_id);
                     println!("   * +--- {def_id:?} ---+");
-                    print_body_mir(&body, Location::START);
+
+
+                    let mut buf = Vec::new();
+                    let _ = write_mir_fn(self.tcx, &body, &mut buf);
+                    let out = String::from_utf8(buf).unwrap();
+
+                    println!("     |");
+                    for (idx, line) in out.lines().enumerate() {
+                        println!("{:4} | {}", idx + 1, line);
+                    }
+
+                    // let _ = rustc_middle::mir::pretty::write_mir_fn(
+                    //     self.tcx,
+                    //     &body,
+                    //     &mut |_, _| Ok(()),
+                    //     &mut std::io::stdout()
+                    // );
+
+                    // print_body_mir(&body, Location::START);
                 } else {
                     println!("MIR for {def_id:?} is not available.");
                 }
@@ -407,9 +416,9 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
                 .get_source_file(&loc.file.name)
                 .unwrap();
 
-            for line_index in start_line..std::cmp::min(end_line, source_file.count_lines()) {
-                if let Some(line) = source_file.get_line(line_index) {
-                    println!("{:4} | {}", line_index + 1, line);
+            for idx in start_line..std::cmp::min(end_line, source_file.count_lines()) {
+                if let Some(line) = source_file.get_line(idx) {
+                    println!("{:4} | {}", idx + 1, line);
                     found_lines = true;
                 }
             }

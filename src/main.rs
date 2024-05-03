@@ -11,13 +11,14 @@ extern crate rustc_errors;
 
 mod eval;
 mod repl;
-mod resolve;
+mod mir;
 mod error;
 
 use rustc_driver::Compilation;
 use rustc_session::config::{CrateType, ErrorOutputType};
 use rustc_session::EarlyDiagCtxt;
 use rustc_hir::def::Res;
+use rustc_middle::mir::{Statement, StatementKind};
 
 
 #[derive(Debug)]
@@ -105,4 +106,13 @@ impl rustc_driver::Callbacks for IntrustCompilerCalls {
             repl::run(tcx, entry_def_id, entry_type)
         })
     }
+}
+
+// Comes from priroda:
+// https://github.com/oli-obk/priroda/blob/0cc9d44c37266e93822b0c4d4db96226d1368a50/src/main.rs#L46
+fn should_hide_stmt(stmt: &Statement) -> bool {
+    matches!(
+        stmt.kind,
+        StatementKind::StorageLive(_) | StatementKind::StorageDead(_) | StatementKind::Nop
+    )
 }
