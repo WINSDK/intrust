@@ -4,15 +4,16 @@ use std::sync::atomic::Ordering;
 
 use miri::Machine;
 use rustc_const_eval::CTRL_C_RECEIVED;
+use rustc_const_eval::interpret::Frame;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::DefId;
-use rustc_middle::mir::{self, Location, StatementKind};
+use rustc_middle::mir::{self, Location};
 use rustc_middle::ty::TyCtxt;
 use rustc_session::config::EntryFnType;
 use rustc_span::{FileName, FileNameDisplayPreference};
 
 use crate::repl::ReplCommand;
-use crate::mir::{write_mir_intro, write_mir_fn, def_path_res};
+use crate::mir::{write_mir_fn, def_path_res};
 use crate::{should_hide_stmt, Error};
 
 const NO_BREAKPOINT_ID: usize = 0;
@@ -144,8 +145,8 @@ impl BreakPoints {
     }
 
     /// Find a [`BreakPoint`], looks only at it's [`BreakPointKind`].
-    fn find(&mut self, kind: BreakPointKind) -> Option<&mut BreakPoint> {
-        self.inner.iter_mut().find(|bp| bp.kind == kind)
+    fn find(&self, kind: BreakPointKind) -> Option<&BreakPoint> {
+        self.inner.iter().find(|bp| bp.kind == kind)
     }
 }
 
@@ -297,17 +298,31 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
                     for (idx, line) in out.lines().enumerate() {
                         println!("{:4} | {}", idx + 1, line);
                     }
-
-                    // let _ = rustc_middle::mir::pretty::write_mir_fn(
-                    //     self.tcx,
-                    //     &body,
-                    //     &mut |_, _| Ok(()),
-                    //     &mut std::io::stdout()
-                    // );
-
-                    // print_body_mir(&body, Location::START);
                 } else {
                     println!("MIR for {def_id:?} is not available.");
+                }
+            }
+            ReplCommand::Locals(()) => {
+                if let Some(frame) = self.frame() {
+                    let body = &frame.body;
+                    for debug_info in body.var_debug_info.iter() {
+                        // This feels like a hack, it'd be better to query the frame's MIR,
+                        // backtracking what the local is referring to.
+                        if debug_info.name.as_str() == "tmp" {
+                            continue;
+                        }
+
+                        let ty = match debug_info.value {
+                            mir::VarDebugInfoContents::Place(place) => {
+                                place.ty(&body.local_decls, self.tcx).ty
+                            }
+                            mir::VarDebugInfoContents::Const(op) => op.ty(),
+                        };
+
+                        println!("({}) {} = {:?}", ty, debug_info.name, debug_info.value);
+                    }
+                } else {
+                    println!("No known frame to display.");
                 }
             }
             _ => {}
@@ -333,7 +348,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         }
 
         // Check breakpoints before each command execution.
-        if let Some(frame) = Machine::stack(&self.ecx).last() {
+        if let Some(frame) = self.frame() {
             let mut is_at_start = true;
 
             if let Some(loc) = frame.loc.left() {
@@ -383,6 +398,10 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         StepResult::Continue
     }
 
+    fn frame(&self) -> Option<&Frame<'mir, 'tcx, miri::Provenance, miri::FrameExtra<'tcx>>> {
+        Machine::stack(&self.ecx).last()
+    }
+
     fn print_bt(&self) {
         for frame in Machine::stack(&self.ecx).iter() {
             println!("{:?}", frame.instance.def_id());
@@ -391,19 +410,29 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
 
     fn print_code(&self) {
         if !self.print_src() {
-            self.print_mir();
+            if !self.print_mir() {
+                println!("No known frame to display.");
+            }
         }
     }
 
-    fn print_mir(&self) {
-        let frame = Machine::stack(&self.ecx).last().unwrap();
-        let sp = frame.current_loc().left().unwrap_or(Location::START);
-        print_body_mir(&frame.body, sp);
+    fn print_mir(&self) -> bool {
+        if let Some(frame) = self.frame() {
+            let sp = frame.current_loc().left().unwrap_or(Location::START);
+            print_body_mir(&frame.body, sp);
+            return true;
+        }
+
+        false
     }
 
     fn print_src(&self) -> bool {
         let mut found_lines = false;
-        let frame = Machine::stack(&self.ecx).last().unwrap();
+        let frame = match self.frame() {
+            Some(frame) => frame,
+            None => return found_lines,
+        };
+
         if let Some(span) = frame.current_source_info().map(|si| si.span) {
             let loc = self.tcx.sess.source_map().lookup_char_pos(span.lo());
             let start_line = if loc.line >= 3 { loc.line - 1 } else { 0 };
