@@ -218,6 +218,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
                 data_race_detector: false,
                 weak_memory_emulation: false,
                 check_alignment: miri::AlignmentCheck::None,
+                backtrace_style: miri::BacktraceStyle::Short,
                 ..Default::default()
             },
         )

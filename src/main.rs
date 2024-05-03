@@ -14,6 +14,9 @@ mod repl;
 mod mir;
 mod error;
 
+use std::path::Path;
+use std::process::Command;
+
 use rustc_driver::Compilation;
 use rustc_session::config::{CrateType, ErrorOutputType};
 use rustc_session::EarlyDiagCtxt;
@@ -48,6 +51,22 @@ fn main() {
         // From cargo-miri/src/utils.rs.
         let user_dirs = directories::ProjectDirs::from("org", "rust-lang", "miri").unwrap();
         let cache_dir = user_dirs.cache_dir().to_string_lossy().into_owned();
+
+        if !Path::new(&cache_dir).is_dir() {
+            let exit_status = Command::new("cargo")
+                .args(&["+nightly", "miri", "setup"])
+                .spawn()
+                .expect("You must have miri installed")
+                .wait()
+                .expect("Failed to run cargo-miri setup")
+                .code()
+                .unwrap_or(1); // Might be killed by signal, in that case we just assume failure .
+
+            if exit_status != 0 {
+                std::process::exit(exit_status);
+            }
+        }
+
         args.push(cache_dir);
     }
 
