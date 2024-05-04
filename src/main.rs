@@ -14,15 +14,14 @@ mod repl;
 mod mir;
 mod error;
 
-use std::path::Path;
-use std::process::Command;
+use std::path::PathBuf;
+use std::process::{Stdio, Command};
 
 use rustc_driver::Compilation;
 use rustc_session::config::{CrateType, ErrorOutputType};
 use rustc_session::EarlyDiagCtxt;
 use rustc_hir::def::Res;
 use rustc_middle::mir::{Statement, StatementKind};
-
 
 #[derive(Debug)]
 pub enum Error {
@@ -47,27 +46,7 @@ fn main() {
     let sysroot_flag = String::from("--sysroot");
     if !args.contains(&sysroot_flag) {
         args.push(sysroot_flag);
-
-        // From cargo-miri/src/utils.rs.
-        let user_dirs = directories::ProjectDirs::from("org", "rust-lang", "miri").unwrap();
-        let cache_dir = user_dirs.cache_dir().to_string_lossy().into_owned();
-
-        if !Path::new(&cache_dir).is_dir() {
-            let exit_status = Command::new("cargo")
-                .args(&["+nightly", "miri", "setup"])
-                .spawn()
-                .expect("You must have miri installed")
-                .wait()
-                .expect("Failed to run cargo-miri setup")
-                .code()
-                .unwrap_or(1); // Might be killed by signal, in that case we just assume failure .
-
-            if exit_status != 0 {
-                std::process::exit(exit_status);
-            }
-        }
-
-        args.push(cache_dir);
+        args.push(find_sysroot());
     }
 
     for arg in DEFAULT_ARGS {
@@ -100,6 +79,27 @@ fn run_compiler(
             .run()
     });
     std::process::exit(exit_code)
+}
+
+fn find_sysroot() -> String {
+    // From cargo-miri/src/utils.rs.
+    let user_dirs = directories::ProjectDirs::from("org", "rust-lang", "miri").unwrap();
+    let cache_dir = user_dirs.cache_dir().to_string_lossy().into_owned();
+
+    let exit_status = Command::new("cargo")
+        .args(["+nightly", "miri", "setup"])
+        .spawn()
+        .expect("You must have miri installed")
+        .wait()
+        .expect("Failed to run cargo-miri setup")
+        .code()
+        .unwrap_or(1); // Might be killed by signal, in that case we just assume failure .
+
+    if exit_status != 0 {
+        std::process::exit(exit_status);
+    }
+
+    cache_dir
 }
 
 struct IntrustCompilerCalls {}

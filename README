@@ -1,7 +1,8 @@
 Intrust debugger
 
 * Depends on miri for execution.
-* Must be run as `cargo run -- ./some_program.rs`.
+* Uses rustup for finding DYLD_LIBRARY_PATH.
+* Must be run as `cargo run -- ./some_program.rs` or via ./intrust.
 =====
 
        88888888

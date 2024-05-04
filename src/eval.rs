@@ -217,6 +217,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
                 isolated_op: miri::IsolatedOp::Allow,
                 data_race_detector: false,
                 weak_memory_emulation: false,
+                provenance_mode: miri::ProvenanceMode::Permissive,
                 check_alignment: miri::AlignmentCheck::None,
                 backtrace_style: miri::BacktraceStyle::Short,
                 ..Default::default()
@@ -342,10 +343,10 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         match self.ecx.step() {
             Ok(true) => {}
             Ok(false) => return StepResult::Exited(0),
-            Err(err) => {
-                let (return_code, _) = miri::report_error(&self.ecx, err).unwrap();
-                return StepResult::Exited(return_code);
-            }
+            Err(err) => return match miri::report_error(&self.ecx, err) {
+                Some((return_code, _)) => StepResult::Exited(return_code),
+                None => StepResult::Exited(1),
+            },
         }
 
         // Check breakpoints before each command execution.

@@ -1,0 +1,15 @@
+#!/bin/bash
+set -e
+
+path=$(rustup which rustc --toolchain nightly | sed 's|/bin/rustc||')
+path="$path/lib"
+
+if ! command -v rustup >/dev/null 2>&1; then
+    echo "Error: 'rustup' command is not installed or not in PATH."
+fi
+
+if [ -z "$DYLD_LIBRARY_PATH" ]; then
+    export DYLD_LIBRARY_PATH="$path"
+fi
+
+./target/debug/intrust "$@"
