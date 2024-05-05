@@ -14,20 +14,29 @@ mod repl;
 mod mir;
 mod error;
 
-use std::path::PathBuf;
-use std::process::{Stdio, Command};
-
+use std::process::Command;
 use rustc_driver::Compilation;
-use rustc_session::config::{CrateType, ErrorOutputType};
-use rustc_session::EarlyDiagCtxt;
+use rustc_session::config::CrateType;
 use rustc_hir::def::Res;
 use rustc_middle::mir::{Statement, StatementKind};
+use clap::{ValueHint, ArgAction, Parser};
 
 #[derive(Debug)]
 pub enum Error {
     NotACallable(Res),
     UnknownPath(String),
     FileNotFound(String),
+}
+
+#[derive(Debug, Parser)]
+struct Cli {
+    /// Commands to be scheduled when program runs.
+    #[clap(short, long, action = ArgAction::Append)]
+    exec: Vec<String>,
+
+    /// Rustc arguments.
+    #[clap(trailing_var_arg = true, value_hint = ValueHint::CommandWithArguments)]
+    rustc: Vec<String>,
 }
 
 pub const DEFAULT_ARGS: &[&str] = &[
@@ -38,10 +47,14 @@ pub const DEFAULT_ARGS: &[&str] = &[
 ];
 
 fn main() {
-    let early_dcx = EarlyDiagCtxt::new(ErrorOutputType::default());
+    let cli = Box::leak(Box::new(Cli::parse()));
+    let mut args = Vec::new();
 
-    let mut args = rustc_driver::args::raw_args(&early_dcx)
-        .unwrap_or_else(|_| std::process::exit(rustc_driver::EXIT_FAILURE));
+    // Executable path.
+    args.push(std::env::args().next().unwrap());
+
+    // Any arguments that have to be passed through.
+    args.extend(std::mem::take(&mut cli.rustc));
 
     let sysroot_flag = String::from("--sysroot");
     if !args.contains(&sysroot_flag) {
@@ -63,7 +76,7 @@ fn main() {
     let using_internal_features =
         rustc_driver::install_ice_hook("https://careful.observer", |_| ());
 
-    run_compiler(args, &mut IntrustCompilerCalls { }, using_internal_features);
+    run_compiler(args, &mut IntrustCompilerCalls { cli, }, using_internal_features);
 }
 
 /// Execute a compiler with the given CLI arguments and callbacks.
@@ -85,7 +98,10 @@ fn find_sysroot() -> String {
     // From cargo-miri/src/utils.rs.
     let user_dirs = directories::ProjectDirs::from("org", "rust-lang", "miri").unwrap();
     let cache_dir = user_dirs.cache_dir().to_string_lossy().into_owned();
+    cache_dir
+}
 
+fn create_sysroot() {
     let exit_status = Command::new("cargo")
         .args(["+nightly", "miri", "setup"])
         .spawn()
@@ -98,11 +114,11 @@ fn find_sysroot() -> String {
     if exit_status != 0 {
         std::process::exit(exit_status);
     }
-
-    cache_dir
 }
 
-struct IntrustCompilerCalls {}
+struct IntrustCompilerCalls {
+    cli: &'static Cli,
+}
 
 // This gets called for every crate being compiled I think.
 impl rustc_driver::Callbacks for IntrustCompilerCalls {
@@ -122,7 +138,8 @@ impl rustc_driver::Callbacks for IntrustCompilerCalls {
                 tcx.dcx().fatal("Can only run programs that have a main function");
             };
 
-            repl::run(tcx, entry_def_id, entry_type)
+            create_sysroot();
+            repl::run(self.cli, tcx, entry_def_id, entry_type)
         })
     }
 }

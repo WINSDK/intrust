@@ -3,8 +3,8 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 
 use miri::Machine;
-use rustc_const_eval::CTRL_C_RECEIVED;
 use rustc_const_eval::interpret::Frame;
+use rustc_const_eval::CTRL_C_RECEIVED;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::DefId;
 use rustc_middle::mir::{self, Location};
@@ -12,8 +12,8 @@ use rustc_middle::ty::TyCtxt;
 use rustc_session::config::EntryFnType;
 use rustc_span::{FileName, FileNameDisplayPreference};
 
+use crate::mir::{def_path_res, write_mir_fn};
 use crate::repl::ReplCommand;
-use crate::mir::{write_mir_fn, def_path_res};
 use crate::{should_hide_stmt, Error};
 
 const NO_BREAKPOINT_ID: usize = 0;
@@ -78,7 +78,7 @@ impl BreakPointKind {
                         return Err(Error::FileNotFound(s_path.to_string()));
                     }
                     file_name
-                },
+                }
                 None => return Err(Error::FileNotFound(s_path.to_string())),
             };
 
@@ -161,6 +161,9 @@ pub struct Context<'mir, 'tcx> {
     tcx: TyCtxt<'tcx>,
     ecx: miri::MiriInterpCx<'mir, 'tcx>,
     bps: BreakPoints,
+
+    entry_id: DefId,
+    entry_type: EntryFnType,
 }
 
 const PRINT_LINE_COUNT: usize = 9;
@@ -205,30 +208,38 @@ fn print_body_mir(body: &mir::Body, sp: Location) {
     }
 }
 
+fn create_ecx<'mir, 'tcx>(
+    tcx: TyCtxt<'tcx>,
+    entry_id: DefId,
+    entry_type: EntryFnType,
+) -> miri::MiriInterpCx<'mir, 'tcx> {
+    miri::create_ecx(
+        tcx,
+        entry_id,
+        entry_type,
+        &miri::MiriConfig {
+            ignore_leaks: true,
+            borrow_tracker: None,
+            isolated_op: miri::IsolatedOp::Allow,
+            data_race_detector: false,
+            weak_memory_emulation: false,
+            provenance_mode: miri::ProvenanceMode::Permissive,
+            check_alignment: miri::AlignmentCheck::None,
+            backtrace_style: miri::BacktraceStyle::Short,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
 impl<'mir, 'tcx> Context<'mir, 'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>, entry_id: DefId, entry_type: EntryFnType) -> Self {
-        let ecx = miri::create_ecx(
-            tcx,
-            entry_id,
-            entry_type,
-            &miri::MiriConfig {
-                ignore_leaks: true,
-                borrow_tracker: None,
-                isolated_op: miri::IsolatedOp::Allow,
-                data_race_detector: false,
-                weak_memory_emulation: false,
-                provenance_mode: miri::ProvenanceMode::Permissive,
-                check_alignment: miri::AlignmentCheck::None,
-                backtrace_style: miri::BacktraceStyle::Short,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
         Self {
             tcx,
-            ecx,
+            ecx: create_ecx(tcx, entry_id, entry_type),
             bps: BreakPoints::new(),
+            entry_id,
+            entry_type,
         }
     }
 
@@ -241,6 +252,12 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         } else {
             println!("Program exited with code {code}.");
         }
+    }
+
+    // NOTE: Remember to update this if any fields change.
+    pub fn reset(&mut self) {
+        self.ecx = create_ecx(self.tcx, self.entry_id, self.entry_type);
+        self.bps = BreakPoints::new();
     }
 
     /// Execute a [`ReplCommand`], returning whether it exited.
@@ -290,7 +307,6 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
                 if self.tcx.is_mir_available(def_id) {
                     let body = self.tcx.optimized_mir(def_id);
                     println!("   * +--- {def_id:?} ---+");
-
 
                     let mut buf = Vec::new();
                     let _ = write_mir_fn(self.tcx, &body, &mut buf);
@@ -343,10 +359,12 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         match self.ecx.step() {
             Ok(true) => {}
             Ok(false) => return StepResult::Exited(0),
-            Err(err) => return match miri::report_error(&self.ecx, err) {
-                Some((return_code, _)) => StepResult::Exited(return_code),
-                None => StepResult::Exited(1),
-            },
+            Err(err) => {
+                return match miri::report_error(&self.ecx, err) {
+                    Some((return_code, _)) => StepResult::Exited(return_code),
+                    None => StepResult::Exited(1),
+                }
+            }
         }
 
         // Check breakpoints before each command execution.

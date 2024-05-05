@@ -1,4 +1,5 @@
-use crate::eval;
+use crate::Cli;
+use crate::eval::Context;
 
 use repl_tools::HighlightAndComplete;
 use rustyline::sqlite_history::SQLiteHistory;
@@ -52,10 +53,14 @@ fn editor() -> rustyline::Result<Editor> {
     Ok(rl)
 }
 
-pub fn run(tcx: TyCtxt, entry_id: DefId, entry_type: EntryFnType) -> ! {
+pub fn run(cli: &'static Cli, tcx: TyCtxt, entry_id: DefId, entry_type: EntryFnType) -> ! {
     let mut rl = editor().expect("Failed to initialize line editor");
     let color = rl.helper().unwrap().color;
-    let mut ctx = eval::Context::new(tcx, entry_id, entry_type);
+    let mut ctx = Context::new(tcx, entry_id, entry_type);
+
+    for cmd in cli.exec.iter() {
+        run_cmd(&mut ctx, color, cmd);
+    }
 
     let mut last_cmd = None;
     loop {
@@ -72,32 +77,7 @@ pub fn run(tcx: TyCtxt, entry_id: DefId, entry_type: EntryFnType) -> ! {
                     }
                 }
 
-                match ReplCommand::from_str(&cmd) {
-                    Ok(ReplCommand::Help(())) => ReplCommand::print_help(color),
-                    Ok(ReplCommand::Exit(())) => std::process::exit(0),
-                    Ok(cmd) => match ctx.run_cmd(cmd) {
-                        Ok(true) => {
-                            // If command exited the program, reset the context.
-                            ctx = eval::Context::new(tcx, entry_id, entry_type);
-                        }
-                        Ok(false) => {}
-                        Err(err) => {
-                            if color {
-                                println!("\x1b[91mError: {}\x1b[0m", err);
-                            } else {
-                                println!("Error: {}", err);
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        if color {
-                            println!("\x1b[91mError: {}\x1b[0m", err);
-                        } else {
-                            println!("Error: {}", err);
-                        }
-                    }
-                }
-
+                run_cmd(&mut ctx, color, &cmd);
                 last_cmd = Some(cmd);
             }
             Err(ReadlineError::Interrupted) => {},
@@ -109,6 +89,32 @@ pub fn run(tcx: TyCtxt, entry_id: DefId, entry_type: EntryFnType) -> ! {
                     println!("Error: {:?}", err);
                 }
                 std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn run_cmd(ctx: &mut Context, color: bool, cmd: &str) {
+    match ReplCommand::from_str(&cmd) {
+        Ok(ReplCommand::Help(())) => ReplCommand::print_help(color),
+        Ok(ReplCommand::Exit(())) => std::process::exit(0),
+        Ok(cmd) => match ctx.run_cmd(cmd) {
+            // If command exited the program, reset the context.
+            Ok(true) => ctx.reset(),
+            Ok(false) => {}
+            Err(err) => {
+                if color {
+                    println!("\x1b[91mError: {}\x1b[0m", err);
+                } else {
+                    println!("Error: {}", err);
+                }
+            }
+        }
+        Err(err) => {
+            if color {
+                println!("\x1b[91mError: {}\x1b[0m", err);
+            } else {
+                println!("Error: {}", err);
             }
         }
     }
