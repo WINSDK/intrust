@@ -128,6 +128,10 @@ impl rustc_driver::Callbacks for IntrustCompilerCalls {
         queries: &'tcx rustc_interface::Queries<'tcx>,
     ) -> Compilation {
         queries.global_ctxt().unwrap().enter(|tcx| {
+            if tcx.sess.dcx().has_errors_or_delayed_bugs().is_some() {
+                tcx.dcx().fatal("Intrust cannot be run on programs that fail compilation");
+            }
+
             if !tcx.crate_types().contains(&CrateType::Executable) {
                 tcx.dcx().fatal("Intrust only works on bin crates");
             }

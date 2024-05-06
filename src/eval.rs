@@ -226,6 +226,7 @@ fn create_ecx<'mir, 'tcx>(
             provenance_mode: miri::ProvenanceMode::Permissive,
             check_alignment: miri::AlignmentCheck::None,
             backtrace_style: miri::BacktraceStyle::Short,
+            args: vec![tcx.sess.io.input.filestem().to_string()],
             ..Default::default()
         },
     )
@@ -254,10 +255,9 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         }
     }
 
-    // NOTE: Remember to update this if any fields change.
+    /// Reset's miri context for re-runs.
     pub fn reset(&mut self) {
         self.ecx = create_ecx(self.tcx, self.entry_id, self.entry_type);
-        self.bps = BreakPoints::new();
     }
 
     /// Execute a [`ReplCommand`], returning whether it exited.
@@ -453,9 +453,31 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
             None => return found_lines,
         };
 
-        if let Some(span) = frame.current_source_info().map(|si| si.span) {
+        let mut spans = if let Some(location) = frame.current_loc().left() {
+            let stmt = location.statement_index;
+            let block = location.block;
+            if stmt == frame.body[block].statements.len() {
+                vec![frame.body[block].terminator().source_info.span]
+            } else {
+                vec![frame.body[block].statements[stmt].source_info.span]
+            }
+        } else {
+            vec![frame.body.span]
+        };
+
+        // Get the original macro caller.
+        spans.extend(
+            spans
+                .last()
+                .unwrap()
+                .macro_backtrace()
+                .next()
+                .map(|b| b.call_site)
+        );
+
+        for span in spans {
             let loc = self.tcx.sess.source_map().lookup_char_pos(span.lo());
-            let start_line = if loc.line >= 3 { loc.line - 1 } else { 0 };
+            let start_line = if loc.line >= 3 { loc.line - 2 } else { 0 };
             let end_line = loc.line + PRINT_LINE_COUNT;
 
             let source_file = self
