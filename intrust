@@ -7,8 +7,14 @@ if ! command -v rustup >/dev/null 2>&1; then
     echo "Error: 'rustup' command is not installed or not in PATH."
 fi
 
-if [ -z "$DYLD_LIBRARY_PATH" ]; then
-    export DYLD_LIBRARY_PATH="$path"
+if [ "$(uname)" == "Darwin" ]; then
+    if [ -z "$DYLD_LIBRARY_PATH" ]; then
+        export DYLD_LIBRARY_PATH="$path"
+    fi
+else
+    if [ -z "$LD_LIBRARY_PATH" ]; then
+        export LD_LIBRARY_PATH="$path"
+    fi
 fi
 
 ./target/debug/intrust "$@"
