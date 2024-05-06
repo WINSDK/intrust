@@ -58,8 +58,10 @@ fn main() {
 
     let sysroot_flag = String::from("--sysroot");
     if !args.contains(&sysroot_flag) {
+        create_sysroot();
+        let sysroot = find_sysroot();
         args.push(sysroot_flag);
-        args.push(find_sysroot());
+        args.push(sysroot);
     }
 
     for arg in DEFAULT_ARGS {
@@ -142,7 +144,6 @@ impl rustc_driver::Callbacks for IntrustCompilerCalls {
                 tcx.dcx().fatal("Can only run programs that have a main function");
             };
 
-            create_sysroot();
             repl::run(self.cli, tcx, entry_def_id, entry_type)
         })
     }
