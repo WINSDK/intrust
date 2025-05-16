@@ -3,6 +3,7 @@ Intrust debugger
 * Depends on miri for execution.
 * Uses rustup for finding DYLD_LIBRARY_PATH.
 * Must be run as `cargo run -- ./some_program.rs` or via ./intrust.
+* Read changelog for specific required rust version
 =====
 
        88888888
@@ -22,3 +23,6 @@ Intrust debugger
 88:::::::::::::88      88:::::::::::::88
   88888888888           88:::::::::88
                             8888888
+
+CHANGELOG:
+* 2025-05-16: Update to work for version "1.89.0" of the nightly compiler.

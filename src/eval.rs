@@ -2,14 +2,13 @@ use std::fmt::{self, Debug};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
-use miri::Machine;
+use miri::{MiriEntryFnType, Machine};
 use rustc_const_eval::interpret::Frame;
 use rustc_const_eval::CTRL_C_RECEIVED;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::DefId;
 use rustc_middle::mir::{self, Location};
 use rustc_middle::ty::TyCtxt;
-use rustc_session::config::EntryFnType;
 use rustc_span::{FileName, FileNameDisplayPreference};
 
 use crate::mir::{def_path_res, write_mir_fn};
@@ -154,16 +153,16 @@ impl BreakPoints {
 enum StepResult {
     Break,
     Continue,
-    Exited(i64),
+    Exited(i32),
 }
 
-pub struct Context<'mir, 'tcx> {
+pub struct Context<'tcx> {
     tcx: TyCtxt<'tcx>,
-    ecx: miri::MiriInterpCx<'mir, 'tcx>,
+    ecx: miri::MiriInterpCx<'tcx>,
     bps: BreakPoints,
 
     entry_id: DefId,
-    entry_type: EntryFnType,
+    entry_type: MiriEntryFnType,
 }
 
 const PRINT_LINE_COUNT: usize = 9;
@@ -208,11 +207,11 @@ fn print_body_mir(body: &mir::Body, sp: Location) {
     }
 }
 
-fn create_ecx<'mir, 'tcx>(
+fn create_ecx<'tcx>(
     tcx: TyCtxt<'tcx>,
     entry_id: DefId,
-    entry_type: EntryFnType,
-) -> miri::MiriInterpCx<'mir, 'tcx> {
+    entry_type: MiriEntryFnType,
+) -> miri::MiriInterpCx<'tcx> {
     miri::create_ecx(
         tcx,
         entry_id,
@@ -229,12 +228,13 @@ fn create_ecx<'mir, 'tcx>(
             args: vec![tcx.sess.io.input.filestem().to_string()],
             ..Default::default()
         },
+        None
     )
     .unwrap()
 }
 
-impl<'mir, 'tcx> Context<'mir, 'tcx> {
-    pub fn new(tcx: TyCtxt<'tcx>, entry_id: DefId, entry_type: EntryFnType) -> Self {
+impl<'tcx> Context<'tcx> {
+    pub fn new(tcx: TyCtxt<'tcx>, entry_id: DefId, entry_type: MiriEntryFnType) -> Self {
         Self {
             tcx,
             ecx: create_ecx(tcx, entry_id, entry_type),
@@ -245,7 +245,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
     }
 
     // Define a function to handle the program exit logic
-    fn handle_exit(&self, code: i64) {
+    fn handle_exit(&self, code: i32) {
         if code != 0 {
             self.tcx
                 .dcx()
@@ -322,7 +322,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
             }
             ReplCommand::Locals(()) => {
                 if let Some(frame) = self.frame() {
-                    let body = &frame.body;
+                    let body = &frame.body();
                     for debug_info in body.var_debug_info.iter() {
                         // This feels like a hack, it'd be better to query the frame's MIR,
                         // backtracking what the local is referring to.
@@ -356,7 +356,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
             return StepResult::Break;
         }
 
-        match self.ecx.step() {
+        match self.ecx.step().report_err() {
             Ok(true) => {}
             Ok(false) => return StepResult::Exited(0),
             Err(err) => {
@@ -371,8 +371,8 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         if let Some(frame) = self.frame() {
             let mut is_at_start = true;
 
-            if let Some(loc) = frame.loc.left() {
-                let bb = &frame.body.basic_blocks[loc.block];
+            if let Some(loc) = frame.current_loc().left() {
+                let bb = &frame.body().basic_blocks[loc.block];
 
                 // If the current statement should be hidden, keep stepping.
                 if loc.statement_index != bb.statements.len()
@@ -385,7 +385,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
             }
 
             if is_at_start {
-                let span = frame.current_source_info().unwrap().span;
+                let span = frame.current_span();
                 let src_loc = self.tcx.sess.source_map().lookup_char_pos(span.lo());
                 let file_name = src_loc
                     .file
@@ -405,7 +405,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
                 }
 
                 let kind = BreakPointKind::Function {
-                    def_id: frame.instance.def_id(),
+                    def_id: frame.instance().def_id(),
                 };
                 if let Some(bp) = self.bps.find(kind) {
                     println!("   * +--- Hit {bp} ---+");
@@ -418,13 +418,13 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         StepResult::Continue
     }
 
-    fn frame(&self) -> Option<&Frame<'mir, 'tcx, miri::Provenance, miri::FrameExtra<'tcx>>> {
+    fn frame(&self) -> Option<&Frame<'tcx, miri::Provenance, miri::FrameExtra<'tcx>>> {
         Machine::stack(&self.ecx).last()
     }
 
     fn print_bt(&self) {
         for frame in Machine::stack(&self.ecx).iter() {
-            println!("{:?}", frame.instance.def_id());
+            println!("{:?}", frame.instance().def_id());
         }
     }
 
@@ -439,7 +439,7 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
     fn print_mir(&self) -> bool {
         if let Some(frame) = self.frame() {
             let sp = frame.current_loc().left().unwrap_or(Location::START);
-            print_body_mir(&frame.body, sp);
+            print_body_mir(&frame.body(), sp);
             return true;
         }
 
@@ -456,13 +456,13 @@ impl<'mir, 'tcx> Context<'mir, 'tcx> {
         let mut spans = if let Some(location) = frame.current_loc().left() {
             let stmt = location.statement_index;
             let block = location.block;
-            if stmt == frame.body[block].statements.len() {
-                vec![frame.body[block].terminator().source_info.span]
+            if stmt == frame.body()[block].statements.len() {
+                vec![frame.body()[block].terminator().source_info.span]
             } else {
-                vec![frame.body[block].statements[stmt].source_info.span]
+                vec![frame.body()[block].statements[stmt].source_info.span]
             }
         } else {
-            vec![frame.body.span]
+            vec![frame.body().span]
         };
 
         // Get the original macro caller.

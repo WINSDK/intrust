@@ -19,6 +19,9 @@ use rustc_driver::Compilation;
 use rustc_session::config::CrateType;
 use rustc_hir::def::Res;
 use rustc_middle::mir::{Statement, StatementKind};
+use rustc_middle::ty::TyCtxt;
+use rustc_session::EarlyDiagCtxt;
+use rustc_session::config::ErrorOutputType;
 use clap::{ValueHint, ArgAction, Parser};
 
 #[derive(Debug)]
@@ -71,27 +74,26 @@ fn main() {
         }
     }
 
+    let early_dcx = EarlyDiagCtxt::new(ErrorOutputType::default());
+
     // Install the ctrlc handler that sets `rustc_const_eval::CTRL_C_RECEIVED`.
     rustc_driver::install_ctrlc_handler();
 
     // Add an ICE bug report hook.
-    let using_internal_features =
-        rustc_driver::install_ice_hook("https://careful.observer", |_| ());
+    rustc_driver::install_ice_hook("https://careful.observer", |_| {});
+    rustc_driver::init_rustc_env_logger(&early_dcx);
 
-    run_compiler(args, &mut IntrustCompilerCalls { cli, }, using_internal_features);
+    run_compiler(args, &mut IntrustCompilerCalls { cli });
 }
 
 /// Execute a compiler with the given CLI arguments and callbacks.
 fn run_compiler(
     args: Vec<String>,
     callbacks: &mut (dyn rustc_driver::Callbacks + Send),
-    using_internal_features: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> ! {
     // Invoke compiler, and handle return code.
     let exit_code = rustc_driver::catch_with_exit_code(move || {
-        rustc_driver::RunCompiler::new(&args, callbacks)
-            .set_using_internal_features(using_internal_features)
-            .run()
+        rustc_driver::run_compiler(&args, callbacks)
     });
     std::process::exit(exit_code)
 }
@@ -127,25 +129,23 @@ impl rustc_driver::Callbacks for IntrustCompilerCalls {
     fn after_analysis<'tcx>(
         &mut self,
         _: &rustc_interface::interface::Compiler,
-        queries: &'tcx rustc_interface::Queries<'tcx>,
+        tcx: TyCtxt<'tcx>,
     ) -> Compilation {
-        queries.global_ctxt().unwrap().enter(|tcx| {
-            if tcx.sess.dcx().has_errors_or_delayed_bugs().is_some() {
-                tcx.dcx().fatal("Intrust cannot be run on programs that fail compilation");
-            }
+        if tcx.sess.dcx().has_errors_or_delayed_bugs().is_some() {
+            tcx.dcx().fatal("Intrust cannot be run on programs that fail compilation");
+        }
 
-            if !tcx.crate_types().contains(&CrateType::Executable) {
-                tcx.dcx().fatal("Intrust only works on bin crates");
-            }
+        if !tcx.crate_types().contains(&CrateType::Executable) {
+            tcx.dcx().fatal("Intrust only works on bin crates");
+        }
 
-            let (entry_def_id, entry_type) = if let Some(entry_def) = tcx.entry_fn(()) {
-                entry_def
-            } else {
-                tcx.dcx().fatal("Can only run programs that have a main function");
-            };
+        let (entry_def_id, entry_type) = if let Some(entry_def) = tcx.entry_fn(()) {
+            entry_def
+        } else {
+            tcx.dcx().fatal("Can only run programs that have a main function");
+        };
 
-            repl::run(self.cli, tcx, entry_def_id, entry_type)
-        })
+        repl::run(self.cli, tcx, entry_def_id, miri::MiriEntryFnType::Rustc(entry_type))
     }
 }
 

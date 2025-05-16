@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::{self, Write};
+use std::fmt::Write as _;
 
 use rustc_hir::{ItemKind, TraitItemRef, ImplItemRef, OwnerId, Node, PrimTy, Mutability};
 use rustc_hir::def_id::{LocalDefId, DefId, CrateNum, LOCAL_CRATE};
@@ -66,7 +67,6 @@ pub fn def_path_res(tcx: TyCtxt, path: &[&str]) -> Vec<Res> {
                 let inherent_impl_children = tcx
                     .inherent_impls(def_id)
                     .into_iter()
-                    .flatten()
                     .flat_map(|&impl_def_id| item_children_by_name(tcx, impl_def_id, segment));
 
                 let direct_children = item_children_by_name(tcx, def_id, segment);
@@ -107,12 +107,10 @@ fn non_local_item_children_by_name(tcx: TyCtxt<'_>, def_id: DefId, name: Symbol)
 }
 
 fn local_item_children_by_name(tcx: TyCtxt<'_>, local_id: LocalDefId, name: Symbol) -> Vec<Res> {
-    let hir = tcx.hir();
-
     let root_mod;
     let item_kind = match tcx.hir_node_by_def_id(local_id) {
         Node::Crate(r#mod) => {
-            root_mod = ItemKind::Mod(r#mod);
+            root_mod = ItemKind::Mod(Ident::dummy(), r#mod);
             &root_mod
         },
         Node::Item(item) => &item.kind,
@@ -129,10 +127,13 @@ fn local_item_children_by_name(tcx: TyCtxt<'_>, local_id: LocalDefId, name: Symb
     };
 
     match item_kind {
-        ItemKind::Mod(r#mod) => r#mod
+        ItemKind::Mod(_, r#mod) => r#mod
             .item_ids
             .iter()
-            .filter_map(|&item_id| res(hir.item(item_id).ident, item_id.owner_id))
+            .filter_map(|&item_id| {
+                let ident = tcx.hir_item(item_id).kind.ident()?;
+                res(ident, item_id.owner_id)
+            })
             .collect(),
         ItemKind::Impl(r#impl) => r#impl
             .items
@@ -173,27 +174,13 @@ fn find_primitive_impls<'tcx>(tcx: TyCtxt<'tcx>, name: &str) -> impl Iterator<It
         "u128" => SimplifiedType::Uint(UintTy::U128),
         "f32" => SimplifiedType::Float(FloatTy::F32),
         "f64" => SimplifiedType::Float(FloatTy::F64),
-        #[allow(trivial_casts)]
-        _ => {
-            return Result::<_, rustc_errors::ErrorGuaranteed>::Ok(&[] as &[_])
-                .into_iter()
-                .flatten()
-                .copied();
-        },
+        _ => return [].iter().copied(),
     };
 
-    tcx.incoherent_impls(ty).into_iter().flatten().copied()
+    tcx.incoherent_impls(ty).iter().copied()
 }
 
 const INDENT: &str = "    ";
-/// Alignment for lining up comments following MIR statements
-pub(crate) const ALIGN: usize = 40;
-
-fn comment(tcx: TyCtxt<'_>, SourceInfo { span, scope }: SourceInfo) -> String {
-    let location = tcx.sess.source_map().span_to_embeddable_string(span);
-    format!("scope {} at {}", scope.index(), location,)
-}
-
 
 /// Write out a human-readable textual representation for the given function.
 pub fn write_mir_fn<'tcx>(
@@ -203,7 +190,7 @@ pub fn write_mir_fn<'tcx>(
 ) -> io::Result<()> {
     write_mir_intro(tcx, body, w)?;
     for block in body.basic_blocks.indices() {
-        write_basic_block(tcx, block, body, w)?;
+        write_basic_block(block, body, w)?;
         if block.index() + 1 != body.basic_blocks.len() {
             writeln!(w)?;
         }
@@ -214,10 +201,10 @@ pub fn write_mir_fn<'tcx>(
     Ok(())
 }
 
-pub fn write_mir_intro<'tcx>(
+fn write_mir_intro<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'_>,
-    w: &mut dyn Write,
+    w: &mut dyn io::Write,
 ) -> io::Result<()> {
     write_mir_sig(tcx, body, w)?;
     writeln!(w, "{{")?;
@@ -233,17 +220,93 @@ pub fn write_mir_intro<'tcx>(
         }
     }
 
-    write_scope_tree(tcx, body, &scope_tree, OUTERMOST_SOURCE_SCOPE, 1, w)?;
+    write_scope_tree(tcx, body, &scope_tree, w, OUTERMOST_SOURCE_SCOPE, 1)?;
 
     // Add an empty line before the first block is printed.
     writeln!(w)?;
 
-    // if let Some(branch_info) = &body.coverage_branch_info {
-    //     write_coverage_branch_info(branch_info, w)?;
-    // }
-    // if let Some(function_coverage_info) = &body.function_coverage_info {
-    //     write_function_coverage_info(function_coverage_info, w)?;
-    // }
+    if let Some(coverage_info_hi) = &body.coverage_info_hi {
+        write_coverage_info_hi(coverage_info_hi, w)?;
+    }
+    if let Some(function_coverage_info) = &body.function_coverage_info {
+        write_function_coverage_info(function_coverage_info, w)?;
+    }
+
+    Ok(())
+}
+
+fn write_function_coverage_info(
+    function_coverage_info: &coverage::FunctionCoverageInfo,
+    w: &mut dyn io::Write,
+) -> io::Result<()> {
+    let coverage::FunctionCoverageInfo { mappings, .. } = function_coverage_info;
+
+    for coverage::Mapping { kind, span } in mappings {
+        writeln!(w, "{INDENT}coverage {kind:?} => {span:?};")?;
+    }
+    writeln!(w)?;
+
+    Ok(())
+}
+
+fn write_coverage_info_hi(
+    coverage_info_hi: &coverage::CoverageInfoHi,
+    w: &mut dyn io::Write,
+) -> io::Result<()> {
+    let coverage::CoverageInfoHi {
+        num_block_markers: _,
+        branch_spans,
+        mcdc_degraded_branch_spans,
+        mcdc_spans,
+    } = coverage_info_hi;
+
+    // Only add an extra trailing newline if we printed at least one thing.
+    let mut did_print = false;
+
+    for coverage::BranchSpan { span, true_marker, false_marker } in branch_spans {
+        writeln!(
+            w,
+            "{INDENT}coverage branch {{ true: {true_marker:?}, false: {false_marker:?} }} => {span:?}",
+        )?;
+        did_print = true;
+    }
+
+    for coverage::MCDCBranchSpan { span, true_marker, false_marker, .. } in
+        mcdc_degraded_branch_spans
+    {
+        writeln!(
+            w,
+            "{INDENT}coverage branch {{ true: {true_marker:?}, false: {false_marker:?} }} => {span:?}",
+        )?;
+        did_print = true;
+    }
+
+    for (
+        coverage::MCDCDecisionSpan { span, end_markers, decision_depth, num_conditions: _ },
+        conditions,
+    ) in mcdc_spans
+    {
+        let num_conditions = conditions.len();
+        writeln!(
+            w,
+            "{INDENT}coverage mcdc decision {{ num_conditions: {num_conditions:?}, end: {end_markers:?}, depth: {decision_depth:?} }} => {span:?}"
+        )?;
+        for coverage::MCDCBranchSpan { span, condition_info, true_marker, false_marker } in
+            conditions
+        {
+            writeln!(
+                w,
+                "{INDENT}coverage mcdc branch {{ condition_id: {:?}, true: {true_marker:?}, false: {false_marker:?} }} => {span:?}",
+                condition_info.condition_id
+            )?;
+        }
+        did_print = true;
+    }
+
+    if did_print {
+        writeln!(w)?;
+    }
+
     Ok(())
 }
 
@@ -260,10 +323,10 @@ fn write_mir_sig(tcx: TyCtxt<'_>, body: &Body, w: &mut dyn Write) -> io::Result<
     match (kind, body.source.promoted) {
         (_, Some(_)) => write!(w, "const ")?, // promoteds are the closest to consts
         (DefKind::Const | DefKind::AssocConst, _) => write!(w, "const ")?,
-        (DefKind::Static { mutability: Mutability::Not, nested: false }, _) => {
+        (DefKind::Static { mutability: Mutability::Not, nested: false, .. }, _) => {
             write!(w, "static ")?;
         }
-        (DefKind::Static { mutability: Mutability::Mut, nested: false }, _) => {
+        (DefKind::Static { mutability: Mutability::Mut, nested: false, .. }, _) => {
             write!(w, "static mut ")?;
         }
         (_, _) if is_function => write!(w, "fn ")?,
@@ -304,12 +367,12 @@ fn write_mir_sig(tcx: TyCtxt<'_>, body: &Body, w: &mut dyn Write) -> io::Result<
 
 /// Prints local variables in a scope tree.
 fn write_scope_tree(
-    tcx: TyCtxt,
-    body: &Body,
+    tcx: TyCtxt<'_>,
+    body: &Body<'_>,
     scope_tree: &HashMap<SourceScope, Vec<SourceScope>>,
+    w: &mut dyn io::Write,
     parent: SourceScope,
     depth: usize,
-    w: &mut dyn Write,
 ) -> io::Result<()> {
     let indent = depth * INDENT.len();
 
@@ -322,11 +385,7 @@ fn write_scope_tree(
 
         let indented_debug_info = format!("{0:1$}debug {2:?};", INDENT, indent, var_debug_info);
 
-        if tcx.sess.opts.unstable_opts.mir_include_spans {
-            writeln!(w, "{0:1$} // in {2}", indented_debug_info, ALIGN, comment(tcx, var_debug_info.source_info))?;
-        } else {
-            writeln!(w, "{indented_debug_info}")?;
-        }
+        writeln!(w, "{indented_debug_info}")?;
     }
 
     // Local variable types.
@@ -349,18 +408,12 @@ fn write_scope_tree(
         );
         if let Some(user_ty) = &local_decl.user_ty {
             for user_ty in user_ty.projections() {
-                writeln!(w, " as {user_ty:?}")?;
+                write!(indented_decl, " as {user_ty:?}").unwrap();
             }
         }
         indented_decl.push(';');
 
-        let local_name = if local == RETURN_PLACE { " return place" } else { "" };
-
-        if tcx.sess.opts.unstable_opts.mir_include_spans {
-            writeln!(w, "{0:1$} //{2} in {3}", indented_decl, ALIGN, local_name, comment(tcx, local_decl.source_info))?;
-        } else {
-            writeln!(w, "{indented_decl}")?;
-        }
+        writeln!(w, "{indented_decl}",)?;
     }
 
     let Some(children) = scope_tree.get(&parent) else {
@@ -371,7 +424,7 @@ fn write_scope_tree(
         let child_data = &body.source_scopes[child];
         assert_eq!(child_data.parent_scope, Some(parent));
 
-        let (special, span) = if let Some((callee, callsite_span)) = child_data.inlined {
+        let (special, _) = if let Some((callee, callsite_span)) = child_data.inlined {
             (
                 format!(
                     " (inlined {}{})",
@@ -386,25 +439,17 @@ fn write_scope_tree(
 
         let indented_header = format!("{0:1$}scope {2}{3} {{", "", indent, child.index(), special);
 
-        if tcx.sess.opts.unstable_opts.mir_include_spans {
-            if let Some(span) = span {
-                writeln!(w, "{0:1$} // at {2}", indented_header, ALIGN, tcx.sess.source_map().span_to_embeddable_string(span))?;
-            } else {
-                writeln!(w, "{indented_header}")?;
-            }
-        } else {
-            writeln!(w, "{indented_header}")?;
-        }
+        writeln!(w, "{indented_header}")?;
 
-        write_scope_tree(tcx, body, scope_tree, child, depth + 1, w)?;
+        write_scope_tree(tcx, body, scope_tree, w, child, depth + 1)?;
         writeln!(w, "{0:1$}}}", "", depth * INDENT.len())?;
     }
+
     Ok(())
 }
 
 /// Write out a human-readable textual representation for the given basic block.
 pub fn write_basic_block<'tcx>(
-    tcx: TyCtxt<'tcx>,
     block: BasicBlock,
     body: &Body<'tcx>,
     w: &mut dyn io::Write,
@@ -423,44 +468,14 @@ pub fn write_basic_block<'tcx>(
         }
 
         let indented_body = format!("{INDENT}{INDENT}{stmt:?};");
-        if tcx.sess.opts.unstable_opts.mir_include_spans {
-            writeln!(
-                w,
-                "{:A$} // {}{}",
-                indented_body,
-                if tcx.sess.verbose_internals() {
-                    format!("{current_location:?}: ")
-                } else {
-                    String::new()
-                },
-                comment(tcx, stmt.source_info),
-                A = ALIGN,
-            )?;
-        } else {
-            writeln!(w, "{indented_body}")?;
-        }
+        writeln!(w, "{indented_body}")?;
 
         current_location.statement_index += 1;
     }
 
     // Terminator at the bottom.
     let indented_terminator = format!("{0}{0}{1:?};", INDENT, data.terminator().kind);
-    if tcx.sess.opts.unstable_opts.mir_include_spans {
-        writeln!(
-            w,
-            "{:A$} // {}{}",
-            indented_terminator,
-            if tcx.sess.verbose_internals() {
-                format!("{current_location:?}: ")
-            } else {
-                String::new()
-            },
-            comment(tcx, data.terminator().source_info),
-            A = ALIGN,
-        )?;
-    } else {
-        writeln!(w, "{indented_terminator}")?;
-    }
+    writeln!(w, "{indented_terminator}")?;
 
     writeln!(w, "{INDENT}}}")
 }

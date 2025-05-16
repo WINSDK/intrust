@@ -8,7 +8,7 @@ use rustyline::error::ReadlineError;
 
 use rustc_middle::ty::TyCtxt;
 use rustc_hir::def_id::DefId;
-use rustc_session::config::EntryFnType;
+use miri::MiriEntryFnType;
 
 repl_tools::define_repl_cmds!(enum ReplCommand {
     err = ReplCommandError;
@@ -53,7 +53,7 @@ fn editor() -> rustyline::Result<Editor> {
     Ok(rl)
 }
 
-pub fn run(cli: &'static Cli, tcx: TyCtxt, entry_id: DefId, entry_type: EntryFnType) -> ! {
+pub fn run(cli: &'static Cli, tcx: TyCtxt, entry_id: DefId, entry_type: MiriEntryFnType) -> ! {
     let mut rl = editor().expect("Failed to initialize line editor");
     let color = rl.helper().unwrap().color;
     let mut ctx = Context::new(tcx, entry_id, entry_type);
